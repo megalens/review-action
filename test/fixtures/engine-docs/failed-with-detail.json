@@ -1,0 +1,42 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_fixture00000000000001",
+  "tier": "standard",
+  "status": "failed",
+  "target": {
+    "kind": "range",
+    "base": "88bc6c98b47d22ed150c83e8c76246305e76cff6",
+    "head": "0e6818269ce34c03cc956ff98a2ef5be435d725c",
+    "snapshot_sha256": "4da70933cd5405fe0d723ccfbc65cc220b754be847cfe83fdce4b0650cc0b136"
+  },
+  "passes": [
+    {
+      "name": "codex-standard",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "failed",
+      "minutes": 0,
+      "reason": "codex exited 1",
+      "detail": "boom",
+      "route": "openai"
+    }
+  ],
+  "findings": [],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": {
+    "requests": 3,
+    "input_tokens": 100,
+    "cached_input_tokens": 0,
+    "output_tokens": 50
+  },
+  "notes": [
+    "no OS-level isolation was used (isolation: none)"
+  ],
+  "sandbox": {
+    "excluded_files": 0,
+    "skipped_files": 0
+  },
+  "isolation": "none",
+  "route": "openai"
+}

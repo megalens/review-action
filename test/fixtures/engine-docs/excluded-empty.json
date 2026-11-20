@@ -1,0 +1,41 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_fixture00000000000001",
+  "tier": "standard",
+  "status": "failed",
+  "target": {
+    "kind": "range",
+    "base": "a9a573376b6a4eda0a93683186316089fa7f38d5",
+    "head": "314c679421a9ac4f69ee9adfa5aec166aa5906b7",
+    "snapshot_sha256": "0fff3c5ee791639f9b809343acc4e20d2daf68832ada77bd22c840da772a1ffd"
+  },
+  "passes": [
+    {
+      "name": "sandbox",
+      "model": "-",
+      "effort": "-",
+      "status": "failed",
+      "minutes": 0,
+      "reason": "every changed file was excluded or skipped, nothing was reviewed"
+    }
+  ],
+  "findings": [],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": {
+    "requests": 3,
+    "input_tokens": 100,
+    "cached_input_tokens": 0,
+    "output_tokens": 50
+  },
+  "notes": [
+    "1 changed file(s) were not sent for review (agent config or credential-shaped)",
+    "1 credential-shaped changed file(s) were replaced by a stub",
+    "no OS-level isolation was used (isolation: none)"
+  ],
+  "sandbox": {
+    "excluded_files": 1,
+    "skipped_files": 0
+  },
+  "isolation": "none"
+}

@@ -1,0 +1,82 @@
+name: 'MegaLens Code Review'
+description: 'Run MegaLens static review on pull requests and publish line-anchored findings.'
+inputs:
+  tier:
+    description: 'Review tier (standard on pull_request; deep via /megalens deep comment). Double tier is not available yet.'
+    required: false
+    default: 'standard'
+  mode:
+    description: 'Execution mode: create, review, publish, or full (full is for same-repo trusted PRs only, not for forks).'
+    required: true
+  artifact-name:
+    description: 'Artifact name for findings.json (shared between review and publish jobs).'
+    required: false
+    default: 'megalens-findings'
+  head-sha:
+    description: 'Pinned PR head SHA for review and publish modes (40-hex SHA).'
+    required: false
+  base-sha:
+    description: 'Pinned PR base SHA for review and publish modes (40-hex SHA).'
+    required: false
+  inline:
+    description: 'Post inline PR review comments for strong findings (true or false; false posts summary only, used when MegaLens GitHub App is active).'
+    required: false
+  findings-path:
+    description: 'Path to read or write megalens.findings/v1 JSON (used by review and publish modes).'
+    required: false
+  megalens-token:
+    description: 'MegaLens account token for create mode (never pass to review or publish jobs).'
+    required: false
+  review-id:
+    description: 'MegaLens review ID for review mode (or pass MEGALENS_REVIEW_ID env).'
+    required: false
+  review-key:
+    description: 'Short-lived MegaLens review key for review mode (or pass MEGALENS_REVIEW_KEY env).'
+    required: false
+  openai-api-key:
+    description: 'OpenAI API key for BYO-key mode (not available yet; use megalens-token).'
+    required: false
+  api-url:
+    description: 'MegaLens API base URL for create mode.'
+    required: false
+    default: 'https://megalens.ai'
+  fail-on:
+    description: 'Fail the job when findings match (none or strong).'
+    required: false
+    default: 'none'
+  timeout-minutes:
+    description: 'Maximum minutes to wait for the MegaLens engine CLI.'
+    required: false
+    default: '25'
+  engine-version:
+    description: 'Pinned megalens-review version.'
+    required: false
+    default: '0.1.0'
+  github-token:
+    description: 'GitHub token for reading PR files, checking permissions, and posting comments.'
+    required: false
+    default: '${{ github.token }}'
+outputs:
+  status:
+    description: 'Outcome status (complete, partial, failed, or skipped).'
+  review_id:
+    description: 'Review identifier from create mode or findings.json.'
+  review_key:
+    description: 'Short-lived review key from create mode (never masked or logged in create; masked first in review).'
+  head_sha:
+    description: 'Pinned PR head SHA resolved in create mode.'
+  base_sha:
+    description: 'Pinned PR base SHA resolved in create mode.'
+  review-id:
+    description: 'Review identifier from findings.json when available.'
+  artifact-name:
+    description: 'Artifact name used for findings.json.'
+  findings-path:
+    description: 'Path where findings.json was written in review mode.'
+  strong-count:
+    description: 'Number of inline-eligible strong findings (P0/P1 inside PR diff hunks).'
+  normal-count:
+    description: 'Number of summary-only findings placed in the collapsed <details> block.'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

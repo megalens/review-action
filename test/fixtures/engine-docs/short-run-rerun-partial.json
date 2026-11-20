@@ -1,0 +1,73 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_fixture00000000000001",
+  "tier": "standard",
+  "status": "partial",
+  "target": {
+    "kind": "range",
+    "base": "37a93d6c84f71a4dea082969a8682cfaff9f0529",
+    "head": "ea47494166c767c58e138a3de8cbe001accf3cfa",
+    "snapshot_sha256": "cea77340cbce4ef55cd668bb39cf24ae0dd2405733b1554f2e98685e94adf052"
+  },
+  "passes": [
+    {
+      "name": "codex-standard",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "failed",
+      "minutes": 0,
+      "reason": "short_run",
+      "superseded_by": "codex-standard-r2",
+      "waived": true,
+      "detail": "2 tool calls; 30000 input tokens for 13 changed files; 40 reasoning tokens",
+      "route": "openai"
+    },
+    {
+      "name": "codex-standard-r2",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "ok",
+      "minutes": 0,
+      "short_run": true,
+      "reason": "short_run",
+      "detail": "2 tool calls; 30000 input tokens for 13 changed files; 40 reasoning tokens",
+      "route": "openai"
+    }
+  ],
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/a.ts",
+      "line_start": 1,
+      "line_end": 1,
+      "title": "SHORT-2",
+      "claim": "Missing null check before dereferencing value.",
+      "failure_scenario": "Empty input throws TypeError.",
+      "priority": "P1",
+      "strength": "strong",
+      "found_by": [
+        "codex-standard-r2"
+      ],
+      "evidence_quote": "export const a = 2;"
+    }
+  ],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": {
+    "requests": 3,
+    "input_tokens": 100,
+    "cached_input_tokens": 0,
+    "output_tokens": 50
+  },
+  "notes": [
+    "no OS-level isolation was used (isolation: none)",
+    "pass codex-standard was unusually short for this diff (2 tool calls; 30000 input tokens for 13 changed files; 40 reasoning tokens) and was re-run once; the short run was not charged",
+    "pass codex-standard-r2 was also unusually short (2 tool calls; 30000 input tokens for 13 changed files; 40 reasoning tokens); the review is reported partial"
+  ],
+  "sandbox": {
+    "excluded_files": 0,
+    "skipped_files": 0
+  },
+  "isolation": "none",
+  "route": "openai"
+}

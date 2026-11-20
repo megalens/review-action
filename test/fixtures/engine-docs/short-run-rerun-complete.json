@@ -1,0 +1,69 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_fixture00000000000001",
+  "tier": "standard",
+  "status": "complete",
+  "target": {
+    "kind": "range",
+    "base": "88bc6c98b47d22ed150c83e8c76246305e76cff6",
+    "head": "2a811695f6d64fb34fe9f0a6eee5a72c71858a9a",
+    "snapshot_sha256": "3e415747d21290b5977284b0d2d40a4808c49bdd1faa48098b545125f8de3c44"
+  },
+  "passes": [
+    {
+      "name": "codex-standard",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "failed",
+      "minutes": 0,
+      "reason": "short_run",
+      "superseded_by": "codex-standard-r2",
+      "waived": true,
+      "detail": "2 tool calls; 30000 input tokens for 13 changed files; 40 reasoning tokens",
+      "route": "openai"
+    },
+    {
+      "name": "codex-standard-r2",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "ok",
+      "minutes": 0,
+      "route": "openai"
+    }
+  ],
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/a.ts",
+      "line_start": 1,
+      "line_end": 1,
+      "title": "Real finding after rerun",
+      "claim": "Missing null check before dereferencing value.",
+      "failure_scenario": "Empty input throws TypeError.",
+      "priority": "P1",
+      "strength": "strong",
+      "found_by": [
+        "codex-standard-r2"
+      ],
+      "evidence_quote": "export const a = 2;"
+    }
+  ],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": {
+    "requests": 3,
+    "input_tokens": 100,
+    "cached_input_tokens": 0,
+    "output_tokens": 50
+  },
+  "notes": [
+    "no OS-level isolation was used (isolation: none)",
+    "pass codex-standard was unusually short for this diff (2 tool calls; 30000 input tokens for 13 changed files; 40 reasoning tokens) and was re-run once; the short run was not charged"
+  ],
+  "sandbox": {
+    "excluded_files": 0,
+    "skipped_files": 0
+  },
+  "isolation": "none",
+  "route": "openai"
+}

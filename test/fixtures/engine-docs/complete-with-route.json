@@ -1,0 +1,56 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_fixture00000000000001",
+  "tier": "standard",
+  "status": "complete",
+  "target": {
+    "kind": "range",
+    "base": "0c9f5b5bce471103a57fc86a6fa65e32b6f55904",
+    "head": "4ef0a27e237a5146de038c3f79b7955009d7da1d",
+    "snapshot_sha256": "370276c664ca25f3e33af24d797712136004d92514155ba3bd3390845a33c13e"
+  },
+  "passes": [
+    {
+      "name": "codex-standard",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "ok",
+      "minutes": 0,
+      "route": "openai"
+    }
+  ],
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/a.ts",
+      "line_start": 1,
+      "line_end": 1,
+      "title": "Null deref in a",
+      "claim": "Missing null check before dereferencing value.",
+      "failure_scenario": "Empty input throws TypeError.",
+      "priority": "P1",
+      "strength": "strong",
+      "found_by": [
+        "codex-standard"
+      ],
+      "evidence_quote": "export const a = 2;"
+    }
+  ],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": {
+    "requests": 3,
+    "input_tokens": 100,
+    "cached_input_tokens": 0,
+    "output_tokens": 50
+  },
+  "notes": [
+    "no OS-level isolation was used (isolation: none)"
+  ],
+  "sandbox": {
+    "excluded_files": 0,
+    "skipped_files": 0
+  },
+  "isolation": "none",
+  "route": "openai"
+}
