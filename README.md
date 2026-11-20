@@ -67,7 +67,7 @@ jobs:
         run: echo "::add-mask::$REVIEW_KEY"
 
       - name: Install bubblewrap for engine isolation
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap && (sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true) && for p in /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/unprivileged_userns; do [ -f $p ] && sudo apparmor_parser -R $p || true; done
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -166,7 +166,7 @@ jobs:
         run: echo "::add-mask::$REVIEW_KEY"
 
       - name: Install bubblewrap for engine isolation
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap && (sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true) && for p in /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/unprivileged_userns; do [ -f $p ] && sudo apparmor_parser -R $p || true; done
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -218,7 +218,7 @@ jobs:
 ```
 
 > **Note:** Never run `npm install`, build scripts, or tests from untrusted PR code in the same job that holds secrets. Always keep `create` (`megalens-token`, no checkout), `review` (`contents: read` only, `MEGALENS_REVIEW_ID`/`MEGALENS_REVIEW_KEY` only), and `publish` (`pull-requests: write`, no PR checkout, no secrets) separate.
-> **Bubblewrap requirement:** `megalens-review` requires `bwrap` (bubblewrap) and a non-root user. Note that Ubuntu 24.04 (`ubuntu-latest`) runners restrict unprivileged user namespaces via AppArmor; test `bwrap` in your runner environment before rollout.
+> **Bubblewrap requirement:** `megalens-review` requires `bwrap` (bubblewrap) and a non-root user. GitHub's `ubuntu-latest` runners block the nested sandbox through AppArmor, so the install step above also sets one kernel setting and unloads two AppArmor profiles for that job. If your runner still blocks it, the engine stops before any review with exit code 4, tells you the exact line to add, and nothing is charged.
 > Set `inline: false` in `publish` to post summary only (for example, when the MegaLens GitHub App is active on the repository).
 
 ## Fork-PR Policy
@@ -248,7 +248,7 @@ jobs:
 | `api-url` | `https://megalens.ai` | MegaLens API base URL for `create` mode. |
 | `fail-on` | `none` | Fail the job when findings match (`none` or `strong`; incomplete runs fail when set). |
 | `timeout-minutes` | `25` | Maximum minutes to wait for `megalens-review`. |
-| `engine-version` | `0.1.0` | Pinned `megalens-review` version. |
+| `engine-version` | `0.1.1` | Pinned `megalens-review` version. |
 | `github-token` | `${{ github.token }}` | GitHub token used for PR comments and permission checks. |
 
 ## Outputs

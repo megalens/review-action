@@ -51,7 +51,7 @@ inputs:
   engine-version:
     description: 'Pinned megalens-review version.'
     required: false
-    default: '0.1.0'
+    default: '0.1.1'
   github-token:
     description: 'GitHub token for reading PR files, checking permissions, and posting comments.'
     required: false
