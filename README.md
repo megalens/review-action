@@ -86,7 +86,7 @@ jobs:
           artifact-name: megalens-findings
           findings-path: ${{ runner.temp }}/findings.json
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886c43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: megalens-findings
@@ -186,7 +186,7 @@ jobs:
           artifact-name: megalens-findings
           findings-path: ${{ runner.temp }}/findings.json
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886c43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: megalens-findings
