@@ -209,6 +209,6 @@ describe('pin-engine script', () => {
     const eng2 = readFileSync(join(tmp, 'src', 'engine.js'), 'utf8')
     assert.equal(eng2.split("'0.1.2':").length, 2)
     assert.throws(() => execFileSync(process.execPath, [join(tmp, 'scripts', 'pin-engine.mjs'), '0.1', 'x'], { stdio: 'pipe' }))
-    assert.equal(PINNED_ENGINE_VERSION, '0.1.1')
+    assert.equal(PINNED_ENGINE_VERSION, '0.1.2') // the repo now pins the published 0.1.2
   })
 })

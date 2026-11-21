@@ -16,12 +16,13 @@ export const BYO_DISABLED_MESSAGE = 'BYO OpenAI key mode is not available yet; u
 export const DOUBLE_TIER_ENABLED = false
 export const DOUBLE_DISABLED_MESSAGE = 'The Double tier is not available yet; use standard or deep.'
 
-export const PINNED_ENGINE_VERSION = '0.1.1'
+export const PINNED_ENGINE_VERSION = '0.1.2'
 // dist.integrity of megalens-review@0.1.0 as published on npm (21 Nov 2026). A tarball that does not match is refused.
 export const PINNED_ENGINE_INTEGRITY = Object.freeze({
   '0.1.0': 'sha512-u96ufJHpgP/AYbaA3pgMtS/q+WAvTJ0wCK+GZ5CvTHDUa+WFyEyVnGeYm82VJ5lv+jTSt2etW08280OXFOhQHg==',
   // 0.1.1: nested-sandbox preflight (a blocked runner stops before any model call, 0 credits). Found in the production E2E.
   '0.1.1': 'sha512-NaUeFRTjxSnrcPQQ2ePwMD0IzrvO3x1N7nBc57638u3g4oo4DMQbCRg0ZI/GylDxt5HhCXtBDiiPbg0NfjO5Jw==',
+  '0.1.2': 'sha512-zC5W3zmErpSU9GXNngUSGp77fVaqDh4hQDZgPAcxnt7v/37osclGQz8/ApR0ROBu6clN19xRDnCZd2GTDivQ0g==',
 })
 
 /**
