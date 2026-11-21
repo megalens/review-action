@@ -110,17 +110,15 @@ describe('too_large refusal in every mode', () => {
     assertNoGenericError(h.summaries)
   })
 
-  it('publish mode: posts the PR comment, ignores head and review id mismatch, green', async () => {
+  it('publish mode: matching document posts the PR comment, green', async () => {
     const h = harness()
     const posted = []
-    const doc = JSON.parse(RAW)
-    doc.target.head = 'd'.repeat(40) // would be a head mismatch for a normal document
     const res = await runAction({
       ...h,
       env: { ...baseEnv, INPUT_MODE: 'publish' },
       payload,
       outPath: '/tmp/too-large.json',
-      readFindingsImpl: async () => JSON.stringify(doc),
+      readFindingsImpl: async () => RAW,
       createGitHubApi: () => fakeApi(posted),
     })
     assert.equal(res.exitCode, 0)
@@ -130,6 +128,39 @@ describe('too_large refusal in every mode', () => {
     assert.equal(h.summaries[0], MESSAGE)
     assert.equal(h.outputs.reason, 'too_large')
     assertNoGenericError([...posted, ...h.summaries])
+  })
+
+  it('publish mode: refusal for a different head is NOT green (old mismatch path)', async () => {
+    const h = harness()
+    const posted = []
+    const doc = JSON.parse(RAW)
+    doc.target.head = 'd'.repeat(40)
+    const res = await runAction({
+      ...h,
+      env: { ...baseEnv, INPUT_MODE: 'publish' },
+      payload,
+      outPath: '/tmp/too-large.json',
+      readFindingsImpl: async () => JSON.stringify(doc),
+      createGitHubApi: () => fakeApi(posted),
+    })
+    assert.equal(res.exitCode, 1)
+    assert.doesNotMatch(posted.join('\n'), /did not review this pull request/)
+  })
+
+  it('publish mode: PR moved to a newer commit, the newer summary is not overwritten with the refusal', async () => {
+    const h = harness()
+    const posted = []
+    const api = { ...fakeApi(posted), getPull: async () => ({ open: true, headSha: 'e'.repeat(40), baseSha: BASE }) }
+    const res = await runAction({
+      ...h,
+      env: { ...baseEnv, INPUT_MODE: 'publish' },
+      payload,
+      outPath: '/tmp/too-large.json',
+      readFindingsImpl: async () => RAW,
+      createGitHubApi: () => api,
+    })
+    assert.equal(res.reason, 'stale_head')
+    assert.doesNotMatch(posted.join('\n'), /did not review this pull request/)
   })
 
   it('full mode: engine exit 3, posts the PR comment, green', async () => {
@@ -184,6 +215,93 @@ describe('too_large refusal in every mode', () => {
     })
     assert.equal(res.exitCode, 1)
     assert.match(posted[0], /Refused by the MegaLens gateway/)
+  })
+})
+
+describe('too_large strictness (stale or mismatched documents)', () => {
+  const reviewEnv = { ...baseEnv, INPUT_MODE: 'review', 'INPUT_REVIEW-ID': 'rv_1', 'INPUT_REVIEW-KEY': 'rk_fixture_123', 'INPUT_HEAD-SHA': HEAD, 'INPUT_BASE-SHA': BASE }
+  const run = (mode, exitCode, raw) => {
+    const h = harness()
+    const posted = []
+    const env = mode === 'review' ? reviewEnv : { ...baseEnv, INPUT_MODE: 'full', 'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_123456' }
+    return runAction({
+      ...h, env, payload, prepareSandbox: () => {},
+      runEngine: async () => ({ exitCode, stdout: '', stderr: '', errorMessage: null, rawFindings: raw }),
+      writeFindingsImpl: async () => {}, uploadArtifact: async () => {},
+      createGitHubApi: () => fakeApi(posted),
+    }).then((res) => ({ res, h, posted }))
+  }
+  for (const mode of ['review', 'full']) {
+    it(`${mode}: leftover refusal with engine exit 4 stays red`, async () => {
+      const { res } = await run(mode, 4, RAW)
+      assert.equal(res.exitCode, 1)
+      assert.notEqual(res.reason, 'too_large')
+    })
+    it(`${mode}: refusal document for another head stays red`, async () => {
+      const d = JSON.parse(RAW)
+      d.target.head = 'd'.repeat(40)
+      const { res } = await run(mode, 3, JSON.stringify(d))
+      assert.equal(res.exitCode, 1)
+    })
+    it(`${mode}: refused=false or no top-level reason is not too_large`, async () => {
+      const d1 = JSON.parse(RAW); d1.refused = false
+      const d2 = JSON.parse(RAW); delete d2.reason
+      for (const d of [d1, d2]) {
+        const { res } = await run(mode, 3, JSON.stringify(d))
+        assert.equal(res.exitCode, 1)
+      }
+    })
+    it(`${mode}: exit 3 with matching document is green; engine credential never reaches comment or summary`, async () => {
+      const d = JSON.parse(RAW)
+      d.notes.push('key rk_dummy_secret_value_123')
+      const { res, h, posted } = await run(mode, 3, JSON.stringify(d))
+      assert.equal(res.exitCode, 0)
+      assert.equal(res.reason, 'too_large')
+      assert.doesNotMatch([...posted, ...h.summaries].join('\n'), /rk_dummy_secret_value_123/)
+    })
+  }
+})
+
+describe('engine runs write to a fresh output file', () => {
+  it('removes any leftover output file before running the engine', async () => {
+    const { runEngineCli } = await import('../src/engine.js')
+    const order = []
+    await runEngineCli(
+      { tier: 'standard', baseSha: 'b'.repeat(40), headSha: HEAD, outPath: '/tmp/out.json', timeoutMinutes: 5, authMode: 'gateway', authEnv: { MEGALENS_TOKEN: 'ml_tok_test12345' }, repoPath: '/w', runnerTemp: '/tmp', cliBin: '/usr/bin/fake' },
+      {
+        baseEnv: { PATH: '/usr/bin' },
+        rmImpl: async (p) => { order.push(['rm', p]) },
+        readFileImpl: async () => { order.push(['read']); return RAW },
+        execFileImpl: async () => { order.push(['exec']); return { exitCode: 3, stdout: '', stderr: '', errorMessage: null } },
+      },
+    )
+    assert.deepEqual(order, [['rm', '/tmp/out.json'], ['exec'], ['read']])
+  })
+})
+
+describe('default engine pin', () => {
+  it('pins the real 0.1.2 integrity string', () => {
+    assert.equal(PINNED_ENGINE_VERSION, '0.1.2')
+    assert.equal(PINNED_ENGINE_INTEGRITY['0.1.2'], 'sha512-zC5W3zmErpSU9GXNngUSGp77fVaqDh4hQDZgPAcxnt7v/37osclGQz8/ApR0ROBu6clN19xRDnCZd2GTDivQ0g==')
+  })
+  it('a tampered tarball is refused with the default pin (no injected digest)', async () => {
+    const { runEngineCli } = await import('../src/engine.js')
+    const calls = []
+    await assert.rejects(
+      () => runEngineCli(
+        { tier: 'standard', baseSha: 'b'.repeat(40), headSha: HEAD, outPath: '/tmp/out.json', timeoutMinutes: 5, authMode: 'gateway', authEnv: { MEGALENS_TOKEN: 'ml_tok_test12345' }, repoPath: '/w', runnerTemp: '/tmp/runner' },
+        {
+          baseEnv: { PATH: '/usr/bin' },
+          mkdtempImpl: async (p) => `${p}xyz`,
+          writeFileImpl: async () => {},
+          readFileImpl: async () => Buffer.from('tampered-tarball'),
+          rmImpl: async () => {},
+          execFileImpl: async (command, args) => { calls.push([command, args[0]]); return { exitCode: 0, stdout: `megalens-review-${PINNED_ENGINE_VERSION}.tgz\n`, stderr: '', errorMessage: null } },
+        },
+      ),
+      /Integrity verification failed/,
+    )
+    assert.deepEqual(calls, [['npm', 'pack']])
   })
 })
 

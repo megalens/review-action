@@ -22,7 +22,7 @@ export {
 import {
   computeEffectiveStatus,
   isStrongFinding,
-  isTooLargeDoc,
+  isVerifiedTooLarge,
   parseFindingsDocument,
   sortFindings,
   tooLargeMessage,
@@ -782,7 +782,7 @@ export async function runAction(deps = {}) {
       return { status: 'failed', exitCode: 1, error: reason }
     }
 
-    if (isTooLargeDoc(doc)) {
+    if (isVerifiedTooLarge(doc, cliResult.exitCode, headSha)) {
       // Too large for one review: not a failure. The engine already closed the review once and used no credits.
       // The job ends green so a large PR is not blocked; the publish job (or full mode) posts the PR comment.
       const message = tooLargeMessage(doc)
@@ -883,26 +883,6 @@ export async function runAction(deps = {}) {
     return { status: 'failed', exitCode: 1, error: reason }
   }
 
-  if (isTooLargeDoc(doc)) {
-    // The refusal document stands in for the pre-opened review and the resolved head: no head-mismatch or
-    // "gateway refused" error, no second close. Green on purpose (see report).
-    const message = tooLargeMessage(doc)
-    const tooLargeTier = doc.tier || selectedTier
-    const tooLargeComment = formatTooLargeComment({ headSha, tier: tooLargeTier, message, now: nowMs })
-    await upsertSummary(tooLargeComment, tooLargeTier)
-    await writeSummary(message)
-    await setOutput('status', 'skipped')
-    await setOutput('reason', 'too_large')
-    if (doc.review_id) {
-      await setOutput('review_id', doc.review_id)
-      await setOutput('review-id', doc.review_id)
-    }
-    await setOutput('artifact-name', inputs.artifactName)
-    await setOutput('strong-count', '0')
-    await setOutput('normal-count', '0')
-    return { status: 'skipped', reason: 'too_large', reviewId: doc.review_id, message, exitCode: 0 }
-  }
-
   // Require target.head to be present and equal to the reviewed PR head SHA.
   if (!doc.target?.head || doc.target.head !== headSha) {
     const got = doc.target?.head ? doc.target.head.slice(0, 7) : 'missing'
@@ -947,6 +927,26 @@ export async function runAction(deps = {}) {
       await setOutput('normal-count', '0')
       return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
     }
+  }
+
+  if (isVerifiedTooLarge(doc, cliResult.exitCode, headSha)) {
+    // Verified refusal (exit 3, refused, too_large, head matches). The artifact head and the live PR head were
+    // checked above, so a newer commit's summary is never overwritten. Green on purpose (see report).
+    const message = tooLargeMessage(doc)
+    const tooLargeTier = doc.tier || selectedTier
+    const tooLargeComment = formatTooLargeComment({ headSha, tier: tooLargeTier, message, now: nowMs })
+    await upsertSummary(tooLargeComment, tooLargeTier)
+    await writeSummary(message)
+    await setOutput('status', 'skipped')
+    await setOutput('reason', 'too_large')
+    if (doc.review_id) {
+      await setOutput('review_id', doc.review_id)
+      await setOutput('review-id', doc.review_id)
+    }
+    await setOutput('artifact-name', inputs.artifactName)
+    await setOutput('strong-count', '0')
+    await setOutput('normal-count', '0')
+    return { status: 'skipped', reason: 'too_large', reviewId: doc.review_id, message, exitCode: 0 }
   }
 
   let allStrongFindings = []

@@ -535,6 +535,19 @@ export function isTooLargeDoc(doc) {
 }
 
 /**
+ * Strict check used by the Action: engine exit 3 AND refused=true AND top-level reason too_large AND the
+ * document's head equals the target head. Anything else is not treated as a too-large refusal.
+ */
+export function isVerifiedTooLarge(doc, exitCode, headSha) {
+  if (!doc || typeof doc !== 'object') return false
+  return exitCode === 3
+    && doc.refused === true
+    && doc.reason === 'too_large'
+    && typeof headSha === 'string' && headSha !== ''
+    && doc.target?.head === headSha
+}
+
+/**
  * The one message shown for a too-large refusal. Numbers come from the engine's first note
  * ("... (N files, about M lines) ..."); without them the sentence simply leaves them out.
  */

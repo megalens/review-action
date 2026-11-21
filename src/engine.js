@@ -360,6 +360,9 @@ export async function runEngineCli(opts, deps = {}) {
     const childEnv = buildChildEnv(baseEnv, opts.authMode, opts.authEnv, { byoKeyEnabled })
     const timeoutMs = Math.max(1, Number(opts.timeoutMinutes) || 25) * 60_000 + 30_000
 
+    // Fresh output file for every invocation: a leftover document must never be read as this run's result.
+    await rmFn(opts.outPath, { force: true }).catch(() => {})
+
     const result = await execFn(command, args, {
       cwd: repoCwd,
       env: childEnv,
