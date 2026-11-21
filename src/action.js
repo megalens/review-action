@@ -105,6 +105,12 @@ export function resolveRepository(payload, env) {
   throw new Error('Could not determine repository owner and name.')
 }
 
+/** A 40-hex SHA shown as its 7-char prefix; anything else as a fixed label, never as artifact text. */
+export function shortShaOrLabel(v) {
+  if (v === undefined || v === null || v === '') return 'missing'
+  return typeof v === 'string' && /^[0-9a-f]{40}$/i.test(v) ? v.slice(0, 7) : 'not a valid SHA'
+}
+
 function getInput(env, name, defaultValue = '') {
   const exactKey = `INPUT_${name.replace(/ /g, '_').toUpperCase()}`
   const altKey = `INPUT_${name.replace(/[- ]/g, '_').toUpperCase()}`
@@ -639,11 +645,14 @@ export async function runAction(deps = {}) {
     if (inputs.mode === 'create' && !inputs.megalensToken) {
       return fail('Missing megalens-token: create mode requires megalens-token.')
     }
+    if (inputs.mode === 'publish' && inputs.megalensToken) {
+      return fail('Refusing megalens-token in publish mode: only the create job receives the account token.')
+    }
     if (inputs.mode === 'review' && !auth) {
       return fail(
         byoKeyEnabled
-          ? 'Missing credentials: set MEGALENS_REVIEW_ID/MEGALENS_REVIEW_KEY, megalens-token, or openai-api-key.'
-          : 'Missing credentials: set MEGALENS_REVIEW_ID/MEGALENS_REVIEW_KEY or megalens-token.',
+          ? 'Missing credentials: set MEGALENS_REVIEW_ID/MEGALENS_REVIEW_KEY (from the create job) or openai-api-key.'
+          : 'Missing credentials: set MEGALENS_REVIEW_ID/MEGALENS_REVIEW_KEY (from the create job).',
       )
     }
   } else {
@@ -905,6 +914,7 @@ export async function runAction(deps = {}) {
         || rawTail
         || `Engine exited with code ${cliResult.exitCode} without findings.json.`
     }
+    const INVALID_ARTIFACT = 'The findings artifact is missing or is not a valid MegaLens findings document.'
     const finishFailed = async (reason, tierForSummary) => {
       await writeSummary(`MegaLens review failed (${tierForSummary}) for ${headSha.slice(0, 7)}: ${reason}`)
       await setOutput('status', 'failed')
@@ -913,9 +923,28 @@ export async function runAction(deps = {}) {
       await setOutput('normal-count', '0')
       return { status: 'failed', exitCode: 1, error: reason }
     }
-    if (!doc) return finishFailed(reasonFor(), selectedTier)
+    if (!doc) return finishFailed(parseError ? INVALID_ARTIFACT : reasonFor(), selectedTier)
+    if (isVerifiedTooLarge(doc, cliResult.exitCode, headSha) && doc.target?.base === baseSha) {
+      const message = tooLargeMessage(doc)
+      await writeSummary(message)
+      await setOutput('status', 'skipped')
+      await setOutput('reason', 'too_large')
+      if (doc.review_id) {
+        await setOutput('review_id', doc.review_id)
+        await setOutput('review-id', doc.review_id)
+      }
+      await setOutput('artifact-name', inputs.artifactName)
+      await setOutput('strong-count', '0')
+      await setOutput('normal-count', '0')
+      return { status: 'skipped', reason: 'too_large', reviewId: doc.review_id || null, message, exitCode: 0 }
+    }
+    if (doc.target?.head && doc.target.head === headSha && doc.target?.base !== baseSha) {
+      // Sol confirm: never echo artifact text; show only a validated SHA prefix.
+      const got = shortShaOrLabel(doc.target?.base)
+      return finishFailed(`Reviewed base SHA (${got}) does not match requested base (${baseSha.slice(0, 7)}).`, doc.tier || selectedTier)
+    }
     if (!doc.target?.head || doc.target.head !== headSha) {
-      const got = doc.target?.head ? doc.target.head.slice(0, 7) : 'missing'
+      const got = shortShaOrLabel(doc.target?.head)
       return finishFailed(`Reviewed head SHA (${got}) does not match requested head (${headSha.slice(0, 7)}).`, doc.tier || selectedTier)
     }
     const dStatus = computeEffectiveStatus(doc.status, cliResult.exitCode, doc.passes, doc.refused)
@@ -1012,7 +1041,7 @@ export async function runAction(deps = {}) {
 
   // Require target.head to be present and equal to the reviewed PR head SHA.
   if (!doc.target?.head || doc.target.head !== headSha) {
-    const got = doc.target?.head ? doc.target.head.slice(0, 7) : 'missing'
+    const got = shortShaOrLabel(doc.target?.head)
     const mismatchMsg = `Reviewed head SHA (${got}) does not match PR head (${headSha.slice(0, 7)}).`
     const effectiveTier = doc.tier || selectedTier
     const summary = formatSummaryComment({

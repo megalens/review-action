@@ -163,3 +163,62 @@ test('pull_request_target is still refused and other events are still skipped', 
   const push = harness({ GITHUB_EVENT_NAME: 'push', INPUT_MODE: 'create' })
   assert.equal((await runAction({ ...push, payload: payload() })).status, 'skipped')
 })
+
+test('dispatch publish: a verified too_large refusal is a green skip, not a token/quota failure', async () => {
+  const raw = JSON.parse((await import('node:fs')).readFileSync(new URL('./fixtures/too-large-refusal.json', import.meta.url), 'utf8'))
+  const b = raw.target.base
+  const hd = raw.target.head
+  const h = harness({ INPUT_MODE: 'publish', INPUT_BASE_SHA: b, INPUT_HEAD_SHA: hd })
+  const res = await runAction({ ...h, payload: payload(), createGitHubApi: noApi, readFindingsImpl: async () => JSON.stringify(raw) })
+  assert.equal(res.status, 'skipped')
+  assert.equal(res.reason, 'too_large')
+  assert.equal(res.exitCode, 0)
+  assert.equal(h.outputs.status, 'skipped')
+  assert.equal(h.outputs.reason, 'too_large')
+  const text = h.summaries.join('\n')
+  assert.match(text, /too large/)
+  assert.equal(/token|quota|spend cap/.test(text), false)
+})
+
+test('dispatch publish: artifact with the right head but a different base fails', async () => {
+  const h = harness({ INPUT_MODE: 'publish', INPUT_BASE_SHA: BASE, INPUT_HEAD_SHA: HEAD })
+  const other = '3333333333333333333333333333333333333333'
+  const res = await runAction({ ...h, payload: payload(), readFindingsImpl: async () => JSON.stringify(doc({ target: { kind: 'range', base: other, head: HEAD, snapshot_sha256: 'abc' } })) })
+  assert.equal(res.status, 'failed')
+  assert.equal(res.exitCode, 1)
+  assert.match(res.error, /base SHA/)
+  assert.equal(h.outputs.status, 'failed')
+})
+
+test('dispatch publish: invalid artifact text is never copied into the summary or error', async () => {
+  const h = harness({ INPUT_MODE: 'publish', INPUT_BASE_SHA: BASE, INPUT_HEAD_SHA: HEAD })
+  const secretLine = 'const API_SECRET = "do-not-leak-this-source-line"'
+  const res = await runAction({ ...h, payload: payload(), readFindingsImpl: async () => secretLine })
+  assert.equal(res.status, 'failed')
+  assert.equal(res.exitCode, 1)
+  assert.equal(h.summaries.join('\n').includes('do-not-leak'), false)
+  assert.equal(String(res.error).includes('do-not-leak'), false)
+  assert.match(res.error, /not a valid MegaLens findings document/)
+})
+
+test('dispatch: missing review credentials point at review id/key, and publish rejects the account token', async () => {
+  const r = harness({ INPUT_MODE: 'review', INPUT_BASE_SHA: BASE, INPUT_HEAD_SHA: HEAD })
+  const rr = await runAction({ ...r, payload: payload(), createGitHubApi: noApi })
+  assert.match(rr.error, /MEGALENS_REVIEW_ID\/MEGALENS_REVIEW_KEY/)
+  assert.equal(/megalens-token/.test(rr.error), false)
+
+  const p = harness({ INPUT_MODE: 'publish', INPUT_BASE_SHA: BASE, INPUT_HEAD_SHA: HEAD, 'INPUT_MEGALENS-TOKEN': TOKEN, INPUT_MEGALENS_TOKEN: TOKEN })
+  const rp = await runAction({ ...p, payload: payload(), createGitHubApi: noApi, readFindingsImpl: async () => JSON.stringify(doc()) })
+  assert.equal(rp.status, 'failed')
+  assert.match(rp.error, /Refusing megalens-token in publish mode/)
+})
+
+import { shortShaOrLabel } from '../src/action.js'
+import { test as t2 } from 'node:test'
+import assert2 from 'node:assert/strict'
+t2('dispatch mismatch messages never echo non-SHA artifact text (Sol confirm)', () => {
+  assert2.equal(shortShaOrLabel('a'.repeat(40)), 'aaaaaaa')
+  assert2.equal(shortShaOrLabel('secret-text-from-artifact'), 'not a valid SHA')
+  assert2.equal(shortShaOrLabel(undefined), 'missing')
+  assert2.equal(shortShaOrLabel({ x: 1 }), 'not a valid SHA')
+})
