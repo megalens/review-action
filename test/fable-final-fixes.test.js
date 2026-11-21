@@ -479,7 +479,7 @@ describe('Fable final review fixes (items 1-8)', () => {
     assert.equal(pubRes.status, 'skipped')
     assert.equal(pubRes.reason, 'stale_head')
     assert.equal(pubRes.exitCode, 0)
-    assert.match(posted[0], /PR has moved/)
+    assert.equal(posted.length, 0) // newer commit: nothing written
 
     // 4e. README checks out pinned head_sha, lists create in needs for every job reading needs.create.outputs.*, and omits internal Review notes
     const readme = await readFile(join(ACTION_ROOT, 'README.md'), 'utf8')

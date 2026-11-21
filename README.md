@@ -37,6 +37,10 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: megalens-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   create:
     runs-on: ubuntu-latest
@@ -126,6 +130,10 @@ on:
     types: [created]
 
 permissions: {}
+
+concurrency:
+  group: megalens-${{ github.event.issue.number }}
+  cancel-in-progress: true
 
 jobs:
   create:

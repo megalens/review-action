@@ -29,7 +29,6 @@ import {
 } from './findings.js'
 import {
   formatInlineComment,
-  formatMovedSummaryComment,
   formatSummaryComment,
   formatTooLargeComment,
   MAX_INLINE_COMMENTS,
@@ -686,7 +685,7 @@ export async function runAction(deps = {}) {
     })
   }
 
-  const outPath = deps.outPath
+  let outPath = deps.outPath
     || inputs.findingsPath
     || (typeof downloadedPath === 'string' && downloadedPath ? downloadedPath : '')
     || (inputs.mode === 'publish'
@@ -736,6 +735,9 @@ export async function runAction(deps = {}) {
         rawFindings: null,
       }
     }
+
+    // The engine may have used a unique output path (old file could not be removed).
+    if (typeof cliResult.outPath === 'string' && cliResult.outPath) outPath = cliResult.outPath
 
     if (cliResult.rawFindings !== null && cliResult.rawFindings !== undefined) {
       try {
@@ -848,15 +850,37 @@ export async function runAction(deps = {}) {
     }
   }
 
-  const upsertSummary = async (body, tierForMarker = selectedTier) => {
+  // Every write to the shared PR comment or job summary goes through here. Right before the write, the live PR
+  // head is re-read: if a newer commit exists, this run writes nothing (one log line).
+  let staleHeadSeen = null
+  const publishShared = async (body, tierForMarker, summaryText = body) => {
     const marker = summaryMarker(tierForMarker)
     const existingId = await api.findSummaryComment(owner, repo, pullNumber, marker)
+    if (typeof api.getPull === 'function') {
+      const live = await api.getPull(owner, repo, pullNumber)
+      if (live?.headSha && live.headSha !== headSha) {
+        staleHeadSeen = live.headSha
+        warn(`MegaLens: PR head moved from ${headSha.slice(0, 7)} to ${live.headSha.slice(0, 7)}; nothing written for this run.`)
+        return { action: 'skipped_stale' }
+      }
+    }
+    let result
     if (existingId !== null) {
       await api.updateIssueComment(owner, repo, existingId, body)
-      return { action: 'updated', commentId: existingId }
+      result = { action: 'updated', commentId: existingId }
+    } else {
+      const createdId = await api.createIssueComment(owner, repo, pullNumber, body)
+      result = { action: 'created', commentId: createdId }
     }
-    const createdId = await api.createIssueComment(owner, repo, pullNumber, body)
-    return { action: 'created', commentId: createdId }
+    await writeSummary(summaryText)
+    return result
+  }
+  const staleResult = async () => {
+    await setOutput('status', 'skipped')
+    await setOutput('artifact-name', inputs.artifactName)
+    await setOutput('strong-count', '0')
+    await setOutput('normal-count', '0')
+    return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
   }
 
   if (!doc) {
@@ -874,8 +898,7 @@ export async function runAction(deps = {}) {
       errorMessage: reason,
       now: nowMs,
     })
-    await upsertSummary(summary, selectedTier)
-    await writeSummary(summary)
+    if ((await publishShared(summary, selectedTier)).action === 'skipped_stale') return staleResult()
     await setOutput('status', 'failed')
     await setOutput('artifact-name', inputs.artifactName)
     await setOutput('strong-count', '0')
@@ -895,8 +918,7 @@ export async function runAction(deps = {}) {
       errorMessage: mismatchMsg,
       now: nowMs,
     })
-    await upsertSummary(summary, effectiveTier)
-    await writeSummary(summary)
+    if ((await publishShared(summary, effectiveTier)).action === 'skipped_stale') return staleResult()
     await setOutput('status', 'failed')
     await setOutput('artifact-name', inputs.artifactName)
     await setOutput('strong-count', '0')
@@ -908,24 +930,12 @@ export async function runAction(deps = {}) {
   const effectiveTier = doc.tier || selectedTier
   const effectiveDoc = { ...doc, status: effectiveStatus, tier: effectiveTier }
 
-  // Re-check PR head before posting for both pull_request and issue_comment events (F7).
+  // Early exit when the PR already moved: write nothing (publishShared re-checks right before every write).
   if (typeof api.getPull === 'function') {
     const latestPr = await api.getPull(owner, repo, pullNumber)
     if (latestPr?.headSha && latestPr.headSha !== headSha) {
-      const movedSummary = formatMovedSummaryComment({
-        reviewedSha: headSha,
-        currentSha: latestPr.headSha,
-        tier: effectiveTier,
-        reviewId: effectiveDoc.review_id,
-        now: nowMs,
-      })
-      await upsertSummary(movedSummary, effectiveTier)
-      await writeSummary(movedSummary)
-      await setOutput('status', 'skipped')
-      await setOutput('artifact-name', inputs.artifactName)
-      await setOutput('strong-count', '0')
-      await setOutput('normal-count', '0')
-      return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
+      warn(`MegaLens: PR head moved from ${headSha.slice(0, 7)} to ${latestPr.headSha.slice(0, 7)}; nothing written for this run.`)
+      return staleResult()
     }
   }
 
@@ -935,8 +945,7 @@ export async function runAction(deps = {}) {
     const message = tooLargeMessage(doc)
     const tooLargeTier = doc.tier || selectedTier
     const tooLargeComment = formatTooLargeComment({ headSha, tier: tooLargeTier, message, now: nowMs })
-    await upsertSummary(tooLargeComment, tooLargeTier)
-    await writeSummary(message)
+    if ((await publishShared(tooLargeComment, tooLargeTier, message)).action === 'skipped_stale') return staleResult()
     await setOutput('status', 'skipped')
     await setOutput('reason', 'too_large')
     if (doc.review_id) {
@@ -1024,8 +1033,7 @@ export async function runAction(deps = {}) {
     errorMessage: summaryErrorMessage,
     now: nowMs,
   })
-  await upsertSummary(summary, effectiveTier)
-  await writeSummary(summary)
+  if ((await publishShared(summary, effectiveTier)).action === 'skipped_stale') return staleResult()
 
   const gateStrongCount = effectiveStatus === 'failed' ? 0 : allStrongFindings.length
   const normalCount = effectiveStatus === 'failed' ? 0 : summaryFindings.length

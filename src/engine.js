@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { createHash, timingSafeEqual } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { redactSecrets } from './redact.js'
@@ -299,6 +299,7 @@ export async function runEngineCli(opts, deps = {}) {
   const execFn = deps.execFileImpl ?? defaultExecFile
   const readFileFn = deps.readFileImpl ?? ((p) => readFile(p, 'utf8'))
   const rmFn = deps.rmImpl ?? rm
+  const statFn = deps.statImpl ?? stat
   const baseEnv = deps.baseEnv ?? process.env
   const runnerTemp = opts.runnerTemp || baseEnv.RUNNER_TEMP || tmpdir()
   const secretValues = [
@@ -361,9 +362,19 @@ export async function runEngineCli(opts, deps = {}) {
     const timeoutMs = Math.max(1, Number(opts.timeoutMinutes) || 25) * 60_000 + 30_000
 
     // Fresh output file for every invocation: a leftover document must never be read as this run's result.
-    await rmFn(opts.outPath, { force: true }).catch(() => {})
+    // If the old file cannot be removed (or is still there), use a unique path for this run instead.
+    let runOutPath = opts.outPath
+    let removed = true
+    try { await rmFn(opts.outPath, { force: true }) } catch { removed = false }
+    if (removed) {
+      try { await statFn(opts.outPath); removed = false } catch { /* gone: good */ }
+    }
+    if (!removed) {
+      runOutPath = `${opts.outPath}.run-${randomBytes(8).toString('hex')}`
+    }
+    const runArgs = runOutPath === opts.outPath ? args : args.map((a) => (a === opts.outPath ? runOutPath : a))
 
-    const result = await execFn(command, args, {
+    const result = await execFn(command, runArgs, {
       cwd: repoCwd,
       env: childEnv,
       timeout: timeoutMs,
@@ -372,7 +383,7 @@ export async function runEngineCli(opts, deps = {}) {
 
     let rawFindings = null
     try {
-      rawFindings = await readFileFn(opts.outPath)
+      rawFindings = await readFileFn(runOutPath)
     } catch {
       rawFindings = null
     }
@@ -383,6 +394,7 @@ export async function runEngineCli(opts, deps = {}) {
       stderr: redactSecrets(result.stderr, secretValues),
       errorMessage: result.errorMessage ? redactSecrets(result.errorMessage, secretValues) : null,
       rawFindings,
+      outPath: runOutPath,
     }
   } finally {
     if (createdInstallDir) {

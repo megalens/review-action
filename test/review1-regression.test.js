@@ -502,8 +502,7 @@ test('8. requires target.head == headSha and posts moved note with no inline com
   assert.equal(movedRes.reason, 'stale_head')
   assert.equal(movedRes.exitCode, 0)
   assert.equal(apiMoved.createdReviews.length, 0)
-  assert.equal(apiMoved.createdComments.length, 1)
-  assert.match(apiMoved.createdComments[0], /Reviewed `2222222`, PR has moved/)
+  assert.equal(apiMoved.createdComments.length, 0)
 
   // Moved PR head on fork PR (publish mode with pinned head-sha) posts moved note and no inline comments
   const apiForkMoved = makeFakeApi({
@@ -543,8 +542,7 @@ test('8. requires target.head == headSha and posts moved note with no inline com
   assert.equal(forkMovedRes.reason, 'stale_head')
   assert.equal(forkMovedRes.exitCode, 0)
   assert.equal(apiForkMoved.createdReviews.length, 0)
-  assert.equal(apiForkMoved.createdComments.length, 1)
-  assert.match(apiForkMoved.createdComments[0], /Reviewed `2222222`, PR has moved/)
+  assert.equal(apiForkMoved.createdComments.length, 0)
 })
 
 // 9. Summary lookup matches token's own login (PAT, App, or github-actions[bot])

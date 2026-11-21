@@ -330,3 +330,165 @@ describe('pin-engine script', () => {
     assert.equal(PINNED_ENGINE_VERSION, '0.1.2') // the repo now pins the published 0.1.2
   })
 })
+
+describe('fix round 2: stale refusal on disk', () => {
+  const QUOTA = JSON.stringify({ ...JSON.parse(RAW), reason: 'quota_exceeded', passes: [{ reason: 'quota_exceeded' }] })
+  const engineOpts = { tier: 'standard', baseSha: BASE, headSha: HEAD, outPath: '/tmp/out.json', timeoutMinutes: 5, authMode: 'gateway', authEnv: { MEGALENS_TOKEN: 'ml_tok_test12345' }, repoPath: '/w', runnerTemp: '/tmp', cliBin: '/usr/bin/fake' }
+
+  it('rm fails: engine writes to a unique path and only that file is read', async () => {
+    const { runEngineCli } = await import('../src/engine.js')
+    let outArg = null
+    const read = []
+    const res = await runEngineCli(engineOpts, {
+      baseEnv: { PATH: '/usr/bin' },
+      rmImpl: async () => { throw new Error('EPERM') },
+      readFileImpl: async (p) => { read.push(p); return p === '/tmp/out.json' ? RAW : QUOTA },
+      execFileImpl: async (_c, args) => { outArg = args[args.indexOf('--out') + 1]; return { exitCode: 3, stdout: '', stderr: '', errorMessage: null } },
+    })
+    assert.notEqual(outArg, '/tmp/out.json')
+    assert.match(outArg, /^\/tmp\/out\.json\.run-[0-9a-f]+$/)
+    assert.deepEqual(read, [outArg])
+    assert.equal(res.outPath, outArg)
+    assert.equal(res.rawFindings, QUOTA)
+  })
+
+  it('rm "succeeds" but the file is still there: unique path too', async () => {
+    const { runEngineCli } = await import('../src/engine.js')
+    let outArg = null
+    await runEngineCli(engineOpts, {
+      baseEnv: { PATH: '/usr/bin' },
+      rmImpl: async () => {},
+      statImpl: async () => ({ size: 1 }),
+      readFileImpl: async () => QUOTA,
+      execFileImpl: async (_c, args) => { outArg = args[args.indexOf('--out') + 1]; return { exitCode: 3, stdout: '', stderr: '', errorMessage: null } },
+    })
+    assert.match(outArg, /\.run-[0-9a-f]+$/)
+  })
+
+  for (const mode of ['review', 'full']) {
+    it(`${mode}: quota refusal with an undeletable same-head too_large file on disk stays red and is not too_large`, async () => {
+      const { runEngineCli } = await import('../src/engine.js')
+      const h = harness()
+      const posted = []
+      const disk = { '/tmp/findings.json': RAW }
+      const env = mode === 'review'
+        ? { ...baseEnv, INPUT_MODE: 'review', 'INPUT_REVIEW-ID': 'rv_1', 'INPUT_REVIEW-KEY': 'rk_fixture_123', 'INPUT_HEAD-SHA': HEAD, 'INPUT_BASE-SHA': BASE }
+        : { ...baseEnv, INPUT_MODE: 'full', 'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_123456' }
+      const res = await runAction({
+        ...h, env, payload, prepareSandbox: () => {}, outPath: '/tmp/findings.json',
+        runEngine: (opts) => runEngineCli({ ...opts, cliBin: '/usr/bin/fake' }, {
+          baseEnv: { PATH: '/usr/bin' },
+          rmImpl: async () => { throw new Error('EPERM') },
+          readFileImpl: async (p) => disk[p],
+          execFileImpl: async (_c, args) => { disk[args[args.indexOf('--out') + 1]] = QUOTA; return { exitCode: 3, stdout: '', stderr: '', errorMessage: null } },
+        }),
+        writeFindingsImpl: async () => {}, uploadArtifact: async () => {},
+        createGitHubApi: () => fakeApi(posted),
+      })
+      assert.equal(res.exitCode, 1)
+      assert.notEqual(res.reason, 'too_large')
+      assert.notEqual(h.outputs.reason, 'too_large')
+      assert.doesNotMatch([...posted, ...h.summaries].join('\n'), /too large for one review/)
+    })
+  }
+
+  it('publish: an unchanged refusal artifact is only trusted when verified (quota refusal is not too_large)', async () => {
+    const h = harness()
+    const posted = []
+    const res = await runAction({
+      ...h, env: { ...baseEnv, INPUT_MODE: 'publish' }, payload, outPath: '/tmp/q.json',
+      readFindingsImpl: async () => QUOTA, createGitHubApi: () => fakeApi(posted),
+    })
+    assert.equal(res.exitCode, 1)
+    assert.notEqual(res.reason, 'too_large')
+    assert.doesNotMatch(posted.join('\n'), /too large for one review/)
+  })
+})
+
+describe('fix round 2: newer commit is never overwritten', () => {
+  const NEW = 'e'.repeat(40)
+  const pubEnv = { ...baseEnv, INPUT_MODE: 'publish' }
+  // getPull answers from a list, then keeps the last answer.
+  const api = (posted, heads) => {
+    let i = 0
+    return {
+      ...fakeApi(posted),
+      listPullFiles: async () => [],
+      getPull: async () => ({ open: true, headSha: heads[Math.min(i++, heads.length - 1)], baseSha: BASE }),
+    }
+  }
+  const cases = {
+    'too_large document': () => RAW,
+    'artifact head mismatch': () => JSON.stringify({ ...JSON.parse(RAW), refused: false, target: { ...JSON.parse(RAW).target, head: 'd'.repeat(40) } }),
+    'no document (parse error)': () => 'not json',
+    'normal complete document': () => JSON.stringify({ schema: 'megalens.findings/v1', review_id: 'rv_1', tier: 'standard', status: 'complete', target: { kind: 'range', base: BASE, head: HEAD }, passes: [], findings: [] }),
+  }
+  for (const [name, doc] of Object.entries(cases)) {
+    it(`publish, PR already moved: ${name} writes nothing and logs one line`, async () => {
+      const h = harness(); const posted = []
+      const res = await runAction({ ...h, env: pubEnv, payload, outPath: '/tmp/x.json', readFindingsImpl: async () => doc(), createGitHubApi: () => api(posted, [NEW]) })
+      assert.equal(res.exitCode, 0)
+      assert.equal(res.reason, 'stale_head')
+      assert.deepEqual(posted, [])
+      assert.deepEqual(h.summaries, [])
+      assert.equal(h.warnings.filter((w) => /moved/.test(w)).length, 1)
+    })
+    it(`publish, PR moves after the first check: ${name} writes nothing`, async () => {
+      const h = harness(); const posted = []
+      // Early check sees HEAD; the re-read right before the write sees NEW.
+      const heads = name === 'no document (parse error)' || name === 'artifact head mismatch' ? [NEW] : [HEAD, NEW]
+      const res = await runAction({ ...h, env: pubEnv, payload, outPath: '/tmp/x.json', readFindingsImpl: async () => doc(), createGitHubApi: () => api(posted, heads) })
+      assert.equal(res.exitCode, 0)
+      assert.equal(res.reason, 'stale_head')
+      assert.deepEqual(posted, [])
+      assert.deepEqual(h.summaries, [])
+    })
+  }
+  it('full mode: too_large and PR moved before the write writes nothing', async () => {
+    const h = harness(); const posted = []
+    const res = await runAction({
+      ...h, env: { ...baseEnv, INPUT_MODE: 'full', 'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_123456' }, payload, prepareSandbox: () => {},
+      runEngine: async () => ({ exitCode: 3, stdout: '', stderr: '', errorMessage: null, rawFindings: RAW }),
+      createGitHubApi: () => api(posted, [HEAD, NEW]),
+    })
+    assert.equal(res.reason, 'stale_head')
+    assert.deepEqual(posted, [])
+    assert.deepEqual(h.summaries, [])
+  })
+  it('an existing newer summary comment is not updated by the stale run', async () => {
+    const h = harness(); const updates = []
+    const a = { ...api([], [HEAD, NEW]), findSummaryComment: async () => 77, updateIssueComment: async (_o, _r, id, b) => { updates.push([id, b]) } }
+    await runAction({ ...h, env: pubEnv, payload, outPath: '/tmp/x.json', readFindingsImpl: async () => RAW, createGitHubApi: () => a })
+    assert.deepEqual(updates, [])
+  })
+  it('PR head unchanged still publishes normally', async () => {
+    const h = harness(); const posted = []
+    const res = await runAction({ ...h, env: pubEnv, payload, outPath: '/tmp/x.json', readFindingsImpl: async () => RAW, createGitHubApi: () => api(posted, [HEAD]) })
+    assert.equal(res.reason, 'too_large')
+    assert.equal(posted.length, 1)
+  })
+})
+
+describe('fix round 2: remaining acceptance gaps', () => {
+  it('a dummy credential in the engine output never reaches comment, summary, logs or warnings', async () => {
+    const d = JSON.parse(RAW)
+    d.notes.push('key rk_dummy_secret_value_123')
+    const h = harness(); const posted = []
+    const logs = []
+    const orig = [console.log, console.error, console.warn, console.info]
+    console.log = console.error = console.warn = console.info = (...a) => logs.push(a.join(' '))
+    try {
+      await runAction({
+        ...h, env: { ...baseEnv, INPUT_MODE: 'full', 'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_123456' }, payload, prepareSandbox: () => {},
+        runEngine: async () => ({ exitCode: 3, stdout: '', stderr: 'rk_dummy_secret_value_123', errorMessage: null, rawFindings: JSON.stringify(d) }),
+        createGitHubApi: () => fakeApi(posted),
+      })
+    } finally { [console.log, console.error, console.warn, console.info] = orig }
+    assert.doesNotMatch([...posted, ...h.summaries, ...h.warnings, ...logs].join('\n'), /rk_dummy_secret_value_123/)
+  })
+  it('README workflows carry the per-PR concurrency group', () => {
+    const readme = readFileSync(join(here, '..', 'README.md'), 'utf8')
+    assert.match(readme, /concurrency:\s*\n\s*group: megalens-\$\{\{ github\.event\.pull_request\.number \}\}\s*\n\s*cancel-in-progress: true/)
+    assert.match(readme, /group: megalens-\$\{\{ github\.event\.issue\.number \}\}/)
+  })
+})
