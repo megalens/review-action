@@ -1,6 +1,7 @@
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { prepareSandbox } from './sandbox.js'
 import { hasWritePermission, isBotUser, parseCommentCommand } from './commands.js'
 import { partitionFindingsByDiff } from './diff.js'
 import {
@@ -289,6 +290,8 @@ export async function runAction(deps = {}) {
   const maskSecret = deps.maskSecret ?? (() => {})
   const rawWarn = deps.warn ?? (() => {})
   const runEngine = deps.runEngine ?? ((opts) => runEngineCli(opts, { byoKeyEnabled, doubleTierEnabled }))
+  // Production only: a test that injects its own engine never touches the real runner.
+  const prepareSandboxFn = deps.prepareSandbox ?? (deps.runEngine ? null : () => prepareSandbox())
   const createApi = deps.createGitHubApi ?? ((token) => createGitHubApi(token))
   const createReviewFn = deps.createReview
     ?? ((opts) => createMegaLensReview(opts, { fetchImpl: deps.fetchImpl }))
@@ -688,6 +691,9 @@ export async function runAction(deps = {}) {
       cliResult.exitCode = 4
     }
   } else {
+    if (inputs.mode === 'review' && prepareSandboxFn) {
+      try { await prepareSandboxFn() } catch { /* never blocks: the engine pre-check decides */ }
+    }
     try {
       cliResult = await runEngine({
         tier: selectedTier,

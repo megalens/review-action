@@ -66,9 +66,6 @@ jobs:
           REVIEW_KEY: ${{ needs.create.outputs.review_key }}
         run: echo "::add-mask::$REVIEW_KEY"
 
-      - name: Install bubblewrap for engine isolation
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && (sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true) && for p in /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/unprivileged_userns; do [ -f $p ] && sudo apparmor_parser -R $p || true; done
-
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
@@ -165,9 +162,6 @@ jobs:
           REVIEW_KEY: ${{ needs.create.outputs.review_key }}
         run: echo "::add-mask::$REVIEW_KEY"
 
-      - name: Install bubblewrap for engine isolation
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && (sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true) && for p in /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/unprivileged_userns; do [ -f $p ] && sudo apparmor_parser -R $p || true; done
-
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.create.outputs.head_sha }}
@@ -218,7 +212,7 @@ jobs:
 ```
 
 > **Note:** Never run `npm install`, build scripts, or tests from untrusted PR code in the same job that holds secrets. Always keep `create` (`megalens-token`, no checkout), `review` (`contents: read` only, `MEGALENS_REVIEW_ID`/`MEGALENS_REVIEW_KEY` only), and `publish` (`pull-requests: write`, no PR checkout, no secrets) separate.
-> **Bubblewrap requirement:** `megalens-review` requires `bwrap` (bubblewrap) and a non-root user. GitHub's `ubuntu-latest` runners block the nested sandbox through AppArmor, so the install step above also sets one kernel setting and unloads two AppArmor profiles for that job. If your runner still blocks it, the engine stops before any review with exit code 4, tells you the exact line to add, and nothing is charged.
+> **Bubblewrap requirement:** `megalens-review` requires `bwrap` (bubblewrap) and a non-root user. In review mode the Action sets this up itself on GitHub-hosted runners: it installs bubblewrap if missing, checks that the nested sandbox starts, and only if it is blocked (Ubuntu AppArmor) changes one kernel setting and unloads two AppArmor profiles for that job. No workflow step is needed, and an older workflow that still has the install step keeps working. On self-hosted runners without passwordless sudo the Action changes nothing: install bubblewrap yourself. If the sandbox still cannot start, the engine stops before any review with exit code 4 and nothing is charged.
 > Set `inline: false` in `publish` to post summary only (for example, when the MegaLens GitHub App is active on the repository).
 
 ## Fork-PR Policy
