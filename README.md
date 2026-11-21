@@ -228,6 +228,29 @@ jobs:
 > To do the setup yourself (self-hosted runners, or `setup-sandbox: off`): `sudo apt-get install -y bubblewrap`, then if the sandbox is still blocked `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` and `sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict` (and `/etc/apparmor.d/unprivileged_userns` if that file exists). If the sandbox still cannot start, the engine stops before any review with exit code 4 and nothing is charged.
 > Set `inline: false` in `publish` to post summary only (for example, when the MegaLens GitHub App is active on the repository).
 
+## Usage: Manual Run Without a Pull Request (`workflow_dispatch`)
+
+Use this to review a commit range that has no pull request, for example from a tool that starts the run with `gh workflow run`. The same three jobs run. `create` calls `POST /api/v2/reviews` with the same body as the PR path (`repo`, `base_sha`, `head_sha`, `tier`), so the same credits and the same free-review and abuse guards apply.
+
+- **Who can start it:** GitHub only lets people with write access to the repository start a `workflow_dispatch` run. It is trusted like a maintainer comment.
+- **No fork path:** dispatch reviews a commit range of the repository the run belongs to, checked out by the workflow in that repository. Check the repository name in the run before you start it: in a clone of a fork, tools such as `gh` can point at the parent repository, and GitHub serves commits from a fork network through the parent. Only someone with write access to the repository can start a dispatch run.
+- **A workflow that already lists `workflow_dispatch`** and passes neither `head-sha` nor `base-sha` is skipped cleanly (exit 0), as before. Passing only one of them fails.
+- **Inputs:** `head-sha` and `base-sha` (both 40-hex, both required in every mode), and `tier` (`standard` or `deep`). `full` mode and `double` are refused.
+- **Token:** `megalens-token` stays in the `create` job only, as for pull requests.
+- **Publish without a PR:** `publish` posts no comment and no inline review, and has no burst guard or head-moved check. It validates `findings.json` against the schema, checks that the reviewed head equals `head-sha`, and writes a short job summary (status and counts only, no code). The findings stay in the workflow artifact `megalens-findings`, which the `review` job uploads. `publish` needs only `contents: read`.
+- **Result:** a `failed` review fails the job. A `partial` review is never reported as clean.
+
+```text
+on:
+  workflow_dispatch:
+    inputs:
+      tier: { description: 'standard or deep', required: true, default: 'standard' }
+      base_sha: { description: 'Base commit (40-hex)', required: true }
+      head_sha: { description: 'Head commit (40-hex)', required: true }
+```
+
+Wire the inputs into the `with:` blocks of the three jobs as `tier: ${{ inputs.tier }}`, `base-sha: ${{ inputs.base_sha }}` and `head-sha: ${{ inputs.head_sha }}`, and check out `ref: ${{ inputs.head_sha }}` in the `review` job.
+
 ## Fork-PR Policy
 
 - On `pull_request` events from a fork, the Action **always skips** (regardless of whether secrets are configured) with exit `0` and writes:

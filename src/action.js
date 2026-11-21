@@ -413,6 +413,7 @@ export async function runAction(deps = {}) {
   let selectedTier = inputs.tier
   let tierWarning = null
   let api = null
+  let isDispatch = false
 
   if (eventName === 'pull_request') {
     if (!SUPPORTED_PR_ACTIONS.has(payload.action)) {
@@ -602,6 +603,48 @@ export async function runAction(deps = {}) {
         tierWarning = 'input tier "deep" ignored for /megalens review; running "standard" (comment /megalens deep for deep).'
         warn(tierWarning)
       }
+    }
+  } else if (eventName === 'workflow_dispatch') {
+    // Dispatch has no pull request. Only someone with write access to the repo can start it
+    // (GitHub rule), so it is trusted like a maintainer comment. There is no fork path.
+    const fail = async (msg) => {
+      await writeSummary(msg)
+      await setOutput('status', 'failed')
+      return { status: 'failed', exitCode: 1, error: msg }
+    }
+    // A workflow that already lists workflow_dispatch for its own reasons (a PR workflow started by hand) passes no SHAs.
+    // Keep the old behaviour for it: a clean skip, not a red failure. Giving only one SHA is a real mistake and fails below.
+    if (!inputs.headSha && !inputs.baseSha) {
+      await writeSummary(`skipped: unsupported event "${eventName}"`)
+      setOutput('status', 'skipped')
+      return { status: 'skipped', reason: 'unsupported_event', exitCode: 0 }
+    }
+    if (inputs.mode === 'full') {
+      return fail('mode "full" is not supported on workflow_dispatch; use create, review and publish.')
+    }
+    if (inputs.tier !== 'standard' && inputs.tier !== 'deep') {
+      return fail(`Invalid tier "${inputs.tier}" for workflow_dispatch. Expected standard or deep.`)
+    }
+    if (!inputs.headSha || !inputs.baseSha) {
+      const missing = [!inputs.headSha && 'head-sha', !inputs.baseSha && 'base-sha'].filter(Boolean).join(' and ')
+      return fail(`Missing ${missing}: workflow_dispatch requires both head-sha and base-sha (40-hex SHAs).`)
+    }
+    ;({ owner, repo } = resolveRepository(payload, env))
+    baseSha = inputs.baseSha
+    headSha = inputs.headSha
+    isFork = false
+    selectedTier = inputs.tier
+    isDispatch = true
+
+    if (inputs.mode === 'create' && !inputs.megalensToken) {
+      return fail('Missing megalens-token: create mode requires megalens-token.')
+    }
+    if (inputs.mode === 'review' && !auth) {
+      return fail(
+        byoKeyEnabled
+          ? 'Missing credentials: set MEGALENS_REVIEW_ID/MEGALENS_REVIEW_KEY, megalens-token, or openai-api-key.'
+          : 'Missing credentials: set MEGALENS_REVIEW_ID/MEGALENS_REVIEW_KEY or megalens-token.',
+      )
     }
   } else {
     await writeSummary(`skipped: unsupported event "${eventName}"`)
@@ -847,6 +890,67 @@ export async function runAction(deps = {}) {
         : failForIncomplete
           ? { error: `Review incomplete (${effectiveStatus}); fail-on is ${inputs.failOn}.` }
           : {}),
+    }
+  }
+
+  if (isDispatch) {
+    // Publish with no pull request: validate findings.json (already done by parseFindingsDocument),
+    // keep it as the workflow artifact (uploaded by the review job), write a short job summary.
+    // No PR comment, no inline review, no burst guard, no head-moved check.
+    const reasonFor = () => {
+      const rawTail = safeText(cliResult.stderr.trim().split('\n').slice(-1)[0] || '')
+      return parseError
+        || (cliResult.exitCode === 3 ? 'Refused by the MegaLens gateway (check token, quota, or spend cap).' : null)
+        || (cliResult.errorMessage ? safeText(cliResult.errorMessage) : null)
+        || rawTail
+        || `Engine exited with code ${cliResult.exitCode} without findings.json.`
+    }
+    const finishFailed = async (reason, tierForSummary) => {
+      await writeSummary(`MegaLens review failed (${tierForSummary}) for ${headSha.slice(0, 7)}: ${reason}`)
+      await setOutput('status', 'failed')
+      await setOutput('artifact-name', inputs.artifactName)
+      await setOutput('strong-count', '0')
+      await setOutput('normal-count', '0')
+      return { status: 'failed', exitCode: 1, error: reason }
+    }
+    if (!doc) return finishFailed(reasonFor(), selectedTier)
+    if (!doc.target?.head || doc.target.head !== headSha) {
+      const got = doc.target?.head ? doc.target.head.slice(0, 7) : 'missing'
+      return finishFailed(`Reviewed head SHA (${got}) does not match requested head (${headSha.slice(0, 7)}).`, doc.tier || selectedTier)
+    }
+    const dStatus = computeEffectiveStatus(doc.status, cliResult.exitCode, doc.passes, doc.refused)
+    const dTier = doc.tier || selectedTier
+    const dFindings = dStatus === 'failed' ? [] : doc.findings
+    const strongN = dFindings.filter((f) => isStrongFinding(f, true)).length
+    const byPriority = ['P0', 'P1', 'P2', 'P3']
+      .map((p) => `${p}: ${dFindings.filter((f) => String(f.priority).toUpperCase() === p).length}`)
+      .join(', ')
+    const refusedDispatch = doc.refused === true || cliResult.exitCode === 3
+    const lines = [
+      `MegaLens review ${dStatus} (${dTier}) for ${headSha.slice(0, 7)}.`,
+      `Findings: ${dFindings.length} (${byPriority}). Strong: ${strongN}.`,
+      'Findings are in the workflow artifact. No pull request was involved, so nothing was posted.',
+    ]
+    if (refusedDispatch) lines.unshift('Refused by the MegaLens gateway (check token, quota, or spend cap).')
+    await writeSummary(lines.join('\n\n'))
+    await setOutput('status', dStatus)
+    if (doc.review_id) {
+      await setOutput('review_id', doc.review_id)
+      await setOutput('review-id', doc.review_id)
+    }
+    await setOutput('artifact-name', inputs.artifactName)
+    await setOutput('strong-count', String(strongN))
+    await setOutput('normal-count', String(Math.max(0, dFindings.length - strongN)))
+    const failIncomplete = inputs.failOn !== 'none' && dStatus === 'partial'
+    const failStrong = inputs.failOn === 'strong' && dStatus === 'complete' && strongN > 0
+    const exitCode = dStatus === 'failed' || failIncomplete || failStrong ? 1 : 0
+    return {
+      status: dStatus,
+      reviewId: doc.review_id || null,
+      exitCode,
+      ...(dStatus === 'failed'
+        ? { error: refusedDispatch ? 'Refused by the MegaLens gateway.' : `Review failed (${dStatus}).` }
+        : {}),
     }
   }
 

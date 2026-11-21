@@ -2,7 +2,7 @@ name: 'MegaLens Code Review'
 description: 'Run MegaLens static review on pull requests and publish line-anchored findings.'
 inputs:
   tier:
-    description: 'Review tier (standard on pull_request; deep via /megalens deep comment). Double tier is not available yet.'
+    description: 'Review tier (standard on pull_request; deep via /megalens deep comment or workflow_dispatch). Double tier is not available yet.'
     required: false
     default: 'standard'
   mode:
@@ -13,10 +13,10 @@ inputs:
     required: false
     default: 'megalens-findings'
   head-sha:
-    description: 'Pinned PR head SHA for review and publish modes (40-hex SHA).'
+    description: 'Pinned head SHA (40-hex). Required in every mode on workflow_dispatch; also used by review and publish on PRs.'
     required: false
   base-sha:
-    description: 'Pinned PR base SHA for review and publish modes (40-hex SHA).'
+    description: 'Pinned base SHA (40-hex). Required in every mode on workflow_dispatch; also used by review on PRs.'
     required: false
   inline:
     description: 'Post inline PR review comments for strong findings (true or false; false posts summary only, used when MegaLens GitHub App is active).'
