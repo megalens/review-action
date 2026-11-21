@@ -240,6 +240,23 @@ export function formatMovedSummaryComment(input) {
   return lines.join('\n')
 }
 
+/** PR comment for a change the engine refused as too large. Not a failure: nothing was reviewed and nothing was charged. */
+export function formatTooLargeComment(input) {
+  const headSha = input.headSha || ''
+  const shortSha = sanitizeText(headSha.slice(0, 7) || 'unknown', 20, { singleLine: true })
+  const tier = input.tier || 'standard'
+  const nowTs = typeof input.now === 'number' && Number.isFinite(input.now) ? input.now : Date.now()
+  return [
+    summaryMarker(tier),
+    summaryMetaMarker(headSha, tier, 'too_large', nowTs),
+    `### MegaLens static review of \`${shortSha}\``,
+    '',
+    sanitizeText(input.message, 400, { singleLine: true }),
+    '',
+    '<sub>Static review only: no code was run.</sub>',
+  ].join('\n')
+}
+
 /**
  * Format the single PR summary comment for a tier.
  * Non-inline findings (normal, P2/P3 strong, outside hunks, no line, no patch) go inside ONE collapsed <details> block.

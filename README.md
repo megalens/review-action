@@ -247,7 +247,7 @@ jobs:
 | `api-url` | `https://megalens.ai` | MegaLens API base URL for `create` mode. |
 | `fail-on` | `none` | Fail the job when findings match (`none` or `strong`; incomplete runs fail when set). |
 | `timeout-minutes` | `25` | Maximum minutes to wait for `megalens-review`. |
-| `engine-version` | `0.1.1` | Pinned `megalens-review` version. |
+| `engine-version` | `""` | `megalens-review` version. Empty uses the version pinned in the Action (`PINNED_ENGINE_VERSION`, now 0.1.1). |
 | `github-token` | `${{ github.token }}` | GitHub token used for PR comments and permission checks. |
 
 ## Outputs
@@ -264,3 +264,7 @@ jobs:
 | `findings-path` | Path where `findings.json` was written in `review` mode. |
 | `strong-count` | Number of strong findings (`P0`/`P1` inside PR diff hunks, including App-overlapped strong findings). |
 | `normal-count` | Number of summary-only findings placed in the collapsed `<details>` block. |
+
+## Changes that are too large
+
+When the engine refuses a change as too large for one review (exit code 3, reason `too_large`), the Action does not show a gateway or head-mismatch error. It posts (publish and full mode) or writes to the job summary (all modes): "MegaLens did not review this pull request: it is too large for one review (N files, about M lines). Split it into smaller pull requests. No credits were used." The job ends green (`status` output `skipped`, `reason` output `too_large`), so a large pull request is not blocked by a failed check.

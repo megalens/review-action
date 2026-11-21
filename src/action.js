@@ -19,11 +19,19 @@ export {
   DOUBLE_DISABLED_MESSAGE,
   DOUBLE_TIER_ENABLED,
 } from './engine.js'
-import { computeEffectiveStatus, isStrongFinding, parseFindingsDocument, sortFindings } from './findings.js'
+import {
+  computeEffectiveStatus,
+  isStrongFinding,
+  isTooLargeDoc,
+  parseFindingsDocument,
+  sortFindings,
+  tooLargeMessage,
+} from './findings.js'
 import {
   formatInlineComment,
   formatMovedSummaryComment,
   formatSummaryComment,
+  formatTooLargeComment,
   MAX_INLINE_COMMENTS,
   parseInlineMarker,
   parseSummaryMeta,
@@ -774,6 +782,28 @@ export async function runAction(deps = {}) {
       return { status: 'failed', exitCode: 1, error: reason }
     }
 
+    if (isTooLargeDoc(doc)) {
+      // Too large for one review: not a failure. The engine already closed the review once and used no credits.
+      // The job ends green so a large PR is not blocked; the publish job (or full mode) posts the PR comment.
+      const message = tooLargeMessage(doc)
+      if (typeof deps.uploadArtifact === 'function') {
+        await deps.uploadArtifact({ name: inputs.artifactName, path: outPath })
+      }
+      await writeSummary(message)
+      await setOutput('status', 'skipped')
+      await setOutput('reason', 'too_large')
+      const tooLargeId = doc.review_id || inputs.reviewId || null
+      if (tooLargeId) {
+        await setOutput('review_id', tooLargeId)
+        await setOutput('review-id', tooLargeId)
+      }
+      await setOutput('artifact-name', inputs.artifactName)
+      await setOutput('findings-path', outPath)
+      await setOutput('strong-count', '0')
+      await setOutput('normal-count', '0')
+      return { status: 'skipped', reason: 'too_large', reviewId: tooLargeId, outPath, artifactName: inputs.artifactName, message, exitCode: 0 }
+    }
+
     const effectiveStatus = computeEffectiveStatus(doc.status, cliResult.exitCode, doc.passes, doc.refused)
     const effectiveDoc = {
       ...doc,
@@ -851,6 +881,26 @@ export async function runAction(deps = {}) {
     await setOutput('strong-count', '0')
     await setOutput('normal-count', '0')
     return { status: 'failed', exitCode: 1, error: reason }
+  }
+
+  if (isTooLargeDoc(doc)) {
+    // The refusal document stands in for the pre-opened review and the resolved head: no head-mismatch or
+    // "gateway refused" error, no second close. Green on purpose (see report).
+    const message = tooLargeMessage(doc)
+    const tooLargeTier = doc.tier || selectedTier
+    const tooLargeComment = formatTooLargeComment({ headSha, tier: tooLargeTier, message, now: nowMs })
+    await upsertSummary(tooLargeComment, tooLargeTier)
+    await writeSummary(message)
+    await setOutput('status', 'skipped')
+    await setOutput('reason', 'too_large')
+    if (doc.review_id) {
+      await setOutput('review_id', doc.review_id)
+      await setOutput('review-id', doc.review_id)
+    }
+    await setOutput('artifact-name', inputs.artifactName)
+    await setOutput('strong-count', '0')
+    await setOutput('normal-count', '0')
+    return { status: 'skipped', reason: 'too_large', reviewId: doc.review_id, message, exitCode: 0 }
   }
 
   // Require target.head to be present and equal to the reviewed PR head SHA.

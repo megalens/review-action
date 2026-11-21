@@ -36,6 +36,7 @@ export const MAX_STRING_LENGTHS = Object.freeze({
   note: 1000,
   isolation: 64,
   error: 2000,
+  reason: 128,
 })
 
 const ALLOWED_ROOT_KEYS = new Set([
@@ -54,6 +55,7 @@ const ALLOWED_ROOT_KEYS = new Set([
   'isolation',
   'route',
   'refused',
+  'reason',
   'error',
 ])
 const ALLOWED_SANDBOX_KEYS = new Set(['excluded_files', 'skipped_files'])
@@ -380,6 +382,7 @@ export function parseFindingsDocument(input) {
     }
   }
 
+  const topReason = assertBoundedString(doc.reason, MAX_STRING_LENGTHS.reason, 'reason')
   const errorStr = assertBoundedString(doc.error, MAX_STRING_LENGTHS.error, 'error')
 
   let notes
@@ -434,6 +437,7 @@ export function parseFindingsDocument(input) {
     ...(typeof isolation === 'string' ? { isolation } : {}),
     ...(typeof route === 'string' ? { route } : {}),
     ...(typeof refused === 'boolean' ? { refused } : {}),
+    ...(typeof topReason === 'string' ? { reason: topReason } : {}),
     ...(typeof errorStr === 'string' ? { error: errorStr } : {}),
   }
 }
@@ -521,4 +525,22 @@ export function isStrongFinding(finding, inDiffHunk = true) {
     return false
   }
   return Boolean(inDiffHunk)
+}
+
+/** True when the engine refused the change as too large for one review (engine exit 3, reason too_large). */
+export function isTooLargeDoc(doc) {
+  if (!doc || typeof doc !== 'object') return false
+  if (doc.reason === 'too_large') return true
+  return Array.isArray(doc.passes) && doc.passes[0]?.reason === 'too_large'
+}
+
+/**
+ * The one message shown for a too-large refusal. Numbers come from the engine's first note
+ * ("... (N files, about M lines) ..."); without them the sentence simply leaves them out.
+ */
+export function tooLargeMessage(doc) {
+  const note = Array.isArray(doc?.notes) && typeof doc.notes[0] === 'string' ? doc.notes[0] : ''
+  const m = /\((\d[\d,]*) files?, about (\d[\d,]*) lines?\)/.exec(note)
+  const size = m ? ` (${m[1]} files, about ${m[2]} lines)` : ''
+  return `MegaLens did not review this pull request: it is too large for one review${size}. Split it into smaller pull requests. No credits were used.`
 }

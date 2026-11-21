@@ -1,0 +1,15 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_none",
+  "tier": "standard",
+  "status": "failed",
+  "reason": "too_large",
+  "refused": true,
+  "target": { "kind": "range", "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "head": "cccccccccccccccccccccccccccccccccccccccc", "snapshot_sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+  "passes": [{ "name": "gateway", "model": "-", "effort": "-", "status": "failed", "minutes": 0, "reason": "too_large" }],
+  "findings": [],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": { "requests": 0, "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0 },
+  "notes": ["This change is too large for one review (412 files, about 61,300 lines). Split it into smaller pull requests, or review one folder."]
+}

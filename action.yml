@@ -49,9 +49,9 @@ inputs:
     required: false
     default: '25'
   engine-version:
-    description: 'Pinned megalens-review version.'
+    description: 'megalens-review version. Leave empty to use the version pinned in the Action (the single constant in src/engine.js).'
     required: false
-    default: '0.1.1'
+    default: ''
   setup-sandbox:
     description: 'Review and full mode: let the Action install bubblewrap and relax the Ubuntu user namespace restriction so the engine sandbox can start. auto (default) changes the machine only on a GitHub-hosted runner; force also changes a self-hosted runner (the kernel and AppArmor change lasts until reboot); off only checks and logs.'
     required: false
@@ -62,7 +62,9 @@ inputs:
     default: '${{ github.token }}'
 outputs:
   status:
-    description: 'Outcome status (complete, partial, failed, or skipped).'
+    description: 'Outcome status (complete, partial, failed, or skipped). A change that is too large for one review ends skipped with reason too_large, and the job stays green.'
+  reason:
+    description: 'Why the run was skipped, for example too_large.'
   review_id:
     description: 'Review identifier from create mode or findings.json.'
   review_key:
