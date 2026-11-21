@@ -1,7 +1,7 @@
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { prepareSandbox } from './sandbox.js'
+import { prepareSandbox, SETUP_MODES } from './sandbox.js'
 import { hasWritePermission, isBotUser, parseCommentCommand } from './commands.js'
 import { partitionFindingsByDiff } from './diff.js'
 import {
@@ -9,6 +9,7 @@ import {
   BYO_KEY_ENABLED,
   DOUBLE_DISABLED_MESSAGE,
   DOUBLE_TIER_ENABLED,
+  PINNED_ENGINE_VERSION,
   resolveAuthEnv,
   runEngineCli,
 } from './engine.js'
@@ -72,6 +73,11 @@ export function isSelfHostedRunner(env = {}, payload = null) {
   return runnerEnv === 'self-hosted'
 }
 
+/** Options for prepareSandbox. Only an exact RUNNER_ENVIRONMENT of github-hosted counts as hosted; it is a yes/no, never put in a command. */
+export function sandboxOptions(env = {}, setupSandbox = 'auto', warn = undefined) {
+  return { mode: setupSandbox, hosted: env.RUNNER_ENVIRONMENT === 'github-hosted', ...(warn ? { warn } : {}) }
+}
+
 /**
  * Parse owner and repo name from payload or GITHUB_REPOSITORY.
  * @param {any} payload
@@ -101,7 +107,7 @@ function getInput(env, name, defaultValue = '') {
   return trimmed === '' ? defaultValue : trimmed
 }
 
-function parseInputs(env) {
+export function parseInputs(env) {
   const tier = getInput(env, 'tier', 'standard').toLowerCase()
   if (!VALID_TIERS.has(tier)) {
     throw new Error(`Invalid tier "${tier}". Expected standard, double, or deep.`)
@@ -138,6 +144,10 @@ function parseInputs(env) {
     throw new Error(`Invalid inline "${inlineRaw}". Expected true or false.`)
   }
 
+  const setupSandbox = getInput(env, 'setup-sandbox', 'auto').toLowerCase()
+  if (!SETUP_MODES.includes(setupSandbox)) {
+    throw new Error(`Invalid setup-sandbox "${setupSandbox}". Expected auto, force, or off.`)
+  }
   const timeoutRaw = getInput(env, 'timeout-minutes', '25')
   const timeoutMinutes = Number(timeoutRaw)
   if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) {
@@ -154,7 +164,8 @@ function parseInputs(env) {
     inline,
     findingsPath: getInput(env, 'findings-path', ''),
     timeoutMinutes,
-    engineVersion: getInput(env, 'engine-version', '0.1.0'),
+    engineVersion: getInput(env, 'engine-version', PINNED_ENGINE_VERSION),
+    setupSandbox,
     megalensToken: getInput(env, 'megalens-token', ''),
     reviewId: getInput(env, 'review-id', '') || String(env.MEGALENS_REVIEW_ID || '').trim(),
     reviewKey: getInput(env, 'review-key', '') || String(env.MEGALENS_REVIEW_KEY || '').trim(),
@@ -291,7 +302,7 @@ export async function runAction(deps = {}) {
   const rawWarn = deps.warn ?? (() => {})
   const runEngine = deps.runEngine ?? ((opts) => runEngineCli(opts, { byoKeyEnabled, doubleTierEnabled }))
   // Production only: a test that injects its own engine never touches the real runner.
-  const prepareSandboxFn = deps.prepareSandbox ?? (deps.runEngine ? null : () => prepareSandbox())
+  const prepareSandboxFn = deps.prepareSandbox ?? (deps.runEngine ? null : () => prepareSandbox(sandboxOptions(env, inputs.setupSandbox, warn)))
   const createApi = deps.createGitHubApi ?? ((token) => createGitHubApi(token))
   const createReviewFn = deps.createReview
     ?? ((opts) => createMegaLensReview(opts, { fetchImpl: deps.fetchImpl }))
@@ -691,7 +702,7 @@ export async function runAction(deps = {}) {
       cliResult.exitCode = 4
     }
   } else {
-    if (inputs.mode === 'review' && prepareSandboxFn) {
+    if ((inputs.mode === 'review' || inputs.mode === 'full') && prepareSandboxFn) {
       try { await prepareSandboxFn() } catch { /* never blocks: the engine pre-check decides */ }
     }
     try {

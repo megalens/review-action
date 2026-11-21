@@ -52,6 +52,10 @@ inputs:
     description: 'Pinned megalens-review version.'
     required: false
     default: '0.1.1'
+  setup-sandbox:
+    description: 'Review and full mode: let the Action install bubblewrap and relax the Ubuntu user namespace restriction so the engine sandbox can start. auto (default) changes the machine only on a GitHub-hosted runner; force also changes a self-hosted runner (the kernel and AppArmor change lasts until reboot); off only checks and logs.'
+    required: false
+    default: 'auto'
   github-token:
     description: 'GitHub token for reading PR files, checking permissions, and posting comments.'
     required: false
