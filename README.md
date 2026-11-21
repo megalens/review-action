@@ -278,7 +278,7 @@ Wire the inputs into the `with:` blocks of the three jobs as `tier: ${{ inputs.t
 | `api-url` | `https://megalens.ai` | MegaLens API base URL for `create` mode. |
 | `fail-on` | `none` | Fail the job when findings match (`none` or `strong`; incomplete runs fail when set). |
 | `timeout-minutes` | `25` | Maximum minutes to wait for `megalens-review`. |
-| `engine-version` | `""` | `megalens-review` version. Empty uses the version pinned in the Action (`PINNED_ENGINE_VERSION`, now 0.1.2). |
+| `engine-version` | `""` | `megalens-review` version. Empty uses the version pinned in the Action (`PINNED_ENGINE_VERSION`, now 0.1.3). |
 | `github-token` | `${{ github.token }}` | GitHub token used for PR comments and permission checks. |
 
 ## Outputs

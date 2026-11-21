@@ -280,8 +280,9 @@ describe('engine runs write to a fresh output file', () => {
 })
 
 describe('default engine pin', () => {
-  it('pins the real 0.1.2 integrity string', () => {
-    assert.equal(PINNED_ENGINE_VERSION, '0.1.2')
+  it('pins the real 0.1.3 integrity string (0.1.2 kept)', () => {
+    assert.equal(PINNED_ENGINE_VERSION, '0.1.3')
+    assert.equal(PINNED_ENGINE_INTEGRITY['0.1.3'], 'sha512-bgdgfD/atIa8A19BoAxL1UtzHCm2+oDHhrGhgywxjwguBDgACOEzyoBGDR8euyh1VqO4UjrkYtEMAUPvsqBhFw==')
     assert.equal(PINNED_ENGINE_INTEGRITY['0.1.2'], 'sha512-zC5W3zmErpSU9GXNngUSGp77fVaqDh4hQDZgPAcxnt7v/37osclGQz8/ApR0ROBu6clN19xRDnCZd2GTDivQ0g==')
   })
   it('a tampered tarball is refused with the default pin (no injected digest)', async () => {
@@ -317,7 +318,7 @@ describe('pin-engine script', () => {
     const integrity = 'sha512-' + 'A'.repeat(86) + '=='
     execFileSync(process.execPath, [join(tmp, 'scripts', 'pin-engine.mjs'), '0.1.2', integrity], { stdio: 'pipe' })
     const eng = readFileSync(join(tmp, 'src', 'engine.js'), 'utf8')
-    assert.match(eng, /PINNED_ENGINE_VERSION = '0\.1\.2'/)
+    assert.match(eng, /PINNED_ENGINE_VERSION = '0\.1\.2'/) // the temp copy is re-pinned to 0.1.2 by this test
     assert.ok(eng.includes(`'0.1.2': '${integrity}'`))
     assert.ok(eng.includes(PINNED_ENGINE_INTEGRITY['0.1.1']), 'older entries kept')
     assert.match(readFileSync(join(tmp, 'README.md'), 'utf8'), /now 0\.1\.2\)/)
@@ -327,7 +328,7 @@ describe('pin-engine script', () => {
     const eng2 = readFileSync(join(tmp, 'src', 'engine.js'), 'utf8')
     assert.equal(eng2.split("'0.1.2':").length, 2)
     assert.throws(() => execFileSync(process.execPath, [join(tmp, 'scripts', 'pin-engine.mjs'), '0.1', 'x'], { stdio: 'pipe' }))
-    assert.equal(PINNED_ENGINE_VERSION, '0.1.2') // the repo now pins the published 0.1.2
+    assert.equal(PINNED_ENGINE_VERSION, '0.1.3') // the repo now pins the published 0.1.3
   })
 })
 
