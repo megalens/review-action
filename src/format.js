@@ -179,40 +179,23 @@ function sentenceEnd(text) {
   return /[.…!?]$/.test(text) ? text : `${text}.`
 }
 
-/** Build a copyable prompt using only the finding's location and description. */
-export function formatFixPrompt(finding, extraSecrets) {
-  // Keep every model field on a single labelled line so it cannot close the code fence or emit HTML comment markers.
-  const breakComments = (text) => text.replace(/<!(?=-)/g, '< !').replace(/--(?=>)/g, '- -')
-  const field = (value, max) =>
-    clip(breakComments(redactSecrets(value ?? '', extraSecrets)).replace(/\s+/g, ' ').trim(), max)
-  const file = breakComments(redactSecrets(finding.file ?? '', extraSecrets)).replace(/[\r\n\t]/g,
-    (char) => JSON.stringify(char).slice(1, -1))
-  const title = sentenceEnd(field(finding.title, 200)) || 'Investigate the reported finding.'
-  const claim = sentenceEnd(field(finding.claim, 400))
-  const scenario = sentenceEnd(field(finding.failure_scenario, 300))
-  const start = finding.line_start
-  const end = finding.line_end
-  const lines = start ? (end > start ? `${start} to ${end}` : String(start)) : 'No line specified'
-
-  return [
-    '<details>',
-    '<summary>Fix prompt</summary>',
-    '',
-    '```',
-    'Verify this finding against the code before editing.',
-    '',
-    `File: ${file || 'No file specified'}`,
-    `Lines: ${lines}`,
-    `Finding: ${title}`,
-    `Why: ${[claim, scenario].filter(Boolean).join(' ') || 'Check when the reported issue occurs and what it affects.'}`,
-    `Expected behavior: ${scenario ? 'Handle the case described above without the reported failure.' : 'Correct the reported behavior and preserve behavior for other cases.'}`,
-    '',
-    'Change only what is needed. Keep the tests passing. Add a test that reproduces the issue before the fix and passes after it.',
-    '```',
-    '',
-    '</details>',
-  ].join('\n')
-}
+// The copyable block is agent input. Keep PR and model text out of it.
+const FIX_PROMPT = [
+  '<details>',
+  '<summary>Fix prompt</summary>',
+  '',
+  'Check the finding in the code and fill in the template in your own words before sending it to a coding tool.',
+  '',
+  '```',
+  'Check [file and lines] to confirm that [describe what happens and when].',
+  'The code should [describe the expected behavior].',
+  '',
+  'Ask for any missing details before editing.',
+  'Keep the fix small. Add a regression test and run the relevant tests.',
+  '```',
+  '',
+  '</details>',
+].join('\n')
 
 /**
  * Format one strong finding as an inline PR review comment.
@@ -236,7 +219,7 @@ export function formatInlineComment(finding, extraSecrets) {
 
   parts.push(
     '',
-    formatFixPrompt(finding, extraSecrets),
+    FIX_PROMPT,
     '',
     '<sub>MegaLens static review. A second opinion on the diff, not a verdict.</sub>',
     inlineMarker(finding, extraSecrets),
@@ -252,9 +235,11 @@ function formatSummaryItem(finding, extraSecrets) {
     : ''
   const title = sentenceEnd(sanitizeText(finding.title || 'Finding', 200, options))
   const claim = finding.claim ? sanitizeText(finding.claim, 300, options) : ''
+  const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 300, options) : ''
+  const description = [title, sentenceEnd(claim), sentenceEnd(scenario)].filter(Boolean).join(' ')
   const appNote = finding.alsoFoundByApp ? ' *(also found by the App)*' : ''
-  const prompt = formatFixPrompt(finding, extraSecrets).replace(/^(?=.)/gm, '  ')
-  return `- **${priority}**${where}: ${title}${claim ? ` ${claim}` : ''}${appNote}\n\n${prompt}\n`
+  const prompt = FIX_PROMPT.replace(/^(?=.)/gm, '  ')
+  return `- **${priority}**${where}: ${description}${appNote}\n\n${prompt}\n`
 }
 
 const FILE_CHANGE_LABELS = new Map([

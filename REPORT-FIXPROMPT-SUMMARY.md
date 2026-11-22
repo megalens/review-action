@@ -53,3 +53,14 @@ Addressed all three findings from `/root/review-input/rv-fixprompt/GEMINI.md`:
 3. **[MEDIUM] Separate `pull_request` and `issue_comment` workflow files do not share a GitHub Actions concurrency group** (`README.md:233`, `REPORT-FIXPROMPT-SUMMARY.md:7`, `test/fix-prompt-summary.test.js:242-246`)
    - Updated `README.md:233` (and `REPORT-FIXPROMPT-SUMMARY.md:7`) to clarify that GitHub Actions `concurrency.group` only serializes runs within the same workflow file (not across separate workflow files) and showed how to combine `pull_request` and `issue_comment` into one workflow file using `group: megalens-${{ github.event.pull_request.number || github.event.issue.number }}` when cross-trigger serialization is required.
    - Added unit test asserting `README.md` documents the single-workflow scope of `concurrency.group` and the combined trigger group expression.
+
+## Fix round
+
+Follow-up to `SOL-CONFIRM1.md`.
+
+1. **High. Copied finding text.** Both comment formats now use a fixed template with placeholders for the maintainer to fill in after checking the code (`src/format.js:183`, `src/format.js:222`, `src/format.js:241`). The finding and its failure scenario appear as redacted text outside the copy block. The regression test checks that changing the path, line numbers, title, claim, and scenario leaves the copied text identical in the inline comment and both summary sections (`test/fix-prompt-summary.test.js:30`). The template applies when comments are rendered. Previously posted inline comments can retain their original prompt because publishing deduplicates them by their trailing marker (`src/action.js:1123`).
+2. **Medium. Reopened GEMINI #3.** The earlier fix misstated the scope of `concurrency.group`. The separate workflow examples already use the same group for a given PR (`README.md:40`, `README.md:134`). GitHub shares that group across workflow files in the repository, so splitting these examples into two files does not create the race claimed in GEMINI #3. The corrected guidance describes cancellation from either workflow (`README.md:235`). The regression test checks the guidance and both example keys (`test/fix-prompt-summary.test.js:255`). [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-only-cancel-in-progress-jobs-or-runs-for-the-current-workflow)
+
+`npm test` passed all 163 tests. Both updated regressions failed against the pre-fix revision. The trailing inline marker and CRLF lookup regressions also passed (`test/fix-prompt-summary.test.js:198`, `test/fix-prompt-summary.test.js:239`).
+
+`node scripts/render-dry-run.mjs` refreshed the Markdown examples through the publish path with mocked GitHub calls. Local CommonMark rendering confirmed that both collapsed sections contain the same copy block. The PNGs show the original dry run.

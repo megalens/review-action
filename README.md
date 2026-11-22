@@ -228,9 +228,11 @@ jobs:
 > To do the setup yourself (self-hosted runners, or `setup-sandbox: off`): `sudo apt-get install -y bubblewrap`, then if the sandbox is still blocked `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` and `sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict` (and `/etc/apparmor.d/unprivileged_userns` if that file exists). If the sandbox still cannot start, the engine stops before any review with exit code 4 and nothing is charged.
 > Set `inline: false` in `publish` to skip inline comments (for example, when the MegaLens GitHub App is active on the repository).
 
-Open **Fix prompt** under any finding to copy a plain text prompt into your coding tool. The prompt includes the location, the reported problem, the expected behavior, and a request to add a test.
+Open **Fix prompt** under a finding to copy the template. Check the issue in the code and fill in the location, problem, and expected behavior in your own words before sending the prompt to a coding tool.
 
-After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same comment author across runs so `publish` updates the existing comment in place. Because GitHub Actions `concurrency.group` only serializes runs within the same workflow file (not across separate workflow files), combine `pull_request` and `issue_comment` into one workflow file with `group: megalens-${{ github.event.pull_request.number || github.event.issue.number }}` if you need cross-trigger serialization.
+After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same comment author across runs so `publish` updates the existing comment in place.
+
+Both workflows use the same concurrency group for a given PR. GitHub Actions shares concurrency groups across workflow files in the same repository. With `cancel-in-progress: true`, a new run can cancel a running review for the same PR from either workflow. [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-only-cancel-in-progress-jobs-or-runs-for-the-current-workflow)
 
 ## Usage: Manual Run Without a Pull Request (`workflow_dispatch`)
 

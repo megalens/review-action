@@ -7,16 +7,14 @@ Failure scenario: Empty input throws TypeError.
 <details>
 <summary>Fix prompt</summary>
 
+Check the finding in the code and fill in the template in your own words before sending it to a coding tool.
+
 ```
-Verify this finding against the code before editing.
+Check [file and lines] to confirm that [describe what happens and when].
+The code should [describe the expected behavior].
 
-File: src/a.ts
-Lines: 1
-Finding: Null deref in a.
-Why: Missing null check before dereferencing value. Empty input throws TypeError.
-Expected behavior: Handle the case described above without the reported failure.
-
-Change only what is needed. Keep the tests passing. Add a test that reproduces the issue before the fix and passes after it.
+Ask for any missing details before editing.
+Keep the fix small. Add a regression test and run the relevant tests.
 ```
 
 </details>

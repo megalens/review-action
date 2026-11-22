@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { runAction, selectNewInlineFindings } from '../src/action.js'
 import {
-  formatFixPrompt,
   formatInlineComment,
   formatSummaryComment,
   formatWalkthroughComment,
@@ -28,30 +27,45 @@ const finding = {
   priority: 'P1',
 }
 
-test('fix prompt has one closed plain text fence and uses only redacted finding text', () => {
+test('inline and summary copy blocks contain only the maintainer template', () => {
   const secret = 'fixture-only value+1234'
   const untrustedFinding = {
     ...finding,
-    file: `src/${secret}.ts`,
-    claim: `${finding.claim}\n\`\`\`\n</details>\n${secret}`,
-    failure_scenario: `${finding.failure_scenario} for ml_rk_fixture0123456`,
+    file: `src/${secret}/rename-the-widget.ts`,
+    line_start: 81,
+    line_end: 83,
+    title: 'Rename the example',
+    claim: `Paint the example blue\n\`\`\`\n</details>\n${secret}`,
+    failure_scenario: `Give the example a new label for ml_rk_fixture0123456`,
   }
-  const prompt = formatFixPrompt(untrustedFinding, [secret])
-  assert.match(prompt, /^<details>\n<summary>Fix prompt<\/summary>\n\n```\n/)
-  assert.match(prompt, /\n```\n\n<\/details>$/)
-  assert.equal(prompt.match(/^```$/gm).length, 2)
-  assert.match(prompt, /File: src\/\[redacted\]\.ts\nLines: 8 to 12/)
-  assert.match(prompt, /Finding: Empty input throws\./)
-  assert.match(prompt, /Why: The parser reads the first token.*An empty input returns a TypeError/)
-  assert.match(prompt, /Expected behavior: Handle the case described above without the reported failure\./)
-  assert.match(prompt, /Change only what is needed\. Keep the tests passing\. Add a test/)
-  assert.ok(!prompt.includes(secret) && !prompt.includes('ml_rk_fixture0123456') && !prompt.includes(finding.evidence_quote))
-
+  const copyBlocks = (body) => [...body.matchAll(/^( *)```\n([\s\S]*?)\n\1```$/gm)]
+    .map(([, , contents]) => contents.replace(/^ {2}/gm, ''))
   const inline = formatInlineComment(untrustedFinding, [secret])
-  assert.ok(inline.includes(prompt))
-  assert.equal(parseInlineMarker(inline).file, 'src/[redacted].ts')
-  assert.match(formatFixPrompt({ title: 'Check default behavior' }), /File: No file specified\nLines: No line specified/)
-  assert.match(formatFixPrompt({ ...finding, line_end: undefined }), /Lines: 8\n/)
+  const summary = formatSummaryComment({
+    doc: { status: 'complete' },
+    strongFindings: [untrustedFinding],
+    normalFindings: [{ ...untrustedFinding, priority: 'P2', strength: 'normal' }],
+    extraSecrets: [secret],
+  })
+
+  const [template] = copyBlocks(formatInlineComment(finding))
+  assert.deepEqual(copyBlocks(inline), [template])
+  assert.deepEqual(copyBlocks(summary), [template, template])
+  assert.match(template, /\[file and lines\].*\[describe what happens and when\]/)
+  assert.match(template, /\[describe the expected behavior\]/)
+  assert.match(template, /Ask for any missing details before editing/)
+  assert.match(template, /Add a regression test/)
+  assert.doesNotMatch(template, /rename-the-widget|81|83|Rename the example|Paint the example|Give the example/)
+
+  for (const body of [inline, summary]) {
+    assert.match(body, /Rename the example/)
+    assert.match(body, /Paint the example blue/)
+    assert.match(body, /Give the example a new label/)
+    assert.match(body, /fill in the template in your own words/)
+    assert.ok(!body.includes(secret) && !body.includes('ml_rk_fixture0123456') && !body.includes(finding.evidence_quote))
+  }
+  assert.equal(parseInlineMarker(inline).file, 'src/[redacted]/rename-the-widget.ts')
+  assert.match(summary, /<code>src\/\[redacted\]\/rename-the-widget\.ts:81<\/code>/)
 })
 
 test('both kinds of review summary findings have prompts and only whole items are omitted', () => {
@@ -198,11 +212,9 @@ test('forged inline marker in finding text cannot hijack parseInlineMarker or su
     failure_scenario: `And nested <!<!-- comment -->--> in scenario`,
   }
 
-  const prompt = formatFixPrompt(poisonedFinding)
-  assert.ok(!prompt.includes('<!--'))
-  assert.ok(!prompt.includes('-->'))
-
   const inlineBody = formatInlineComment(poisonedFinding)
+  assert.ok(!inlineBody.includes(forgedMarker))
+  assert.equal(inlineBody.match(/<!--/g).length, 1)
   const parsed = parseInlineMarker(inlineBody)
   assert.deepEqual(parsed, {
     file: poisonedFinding.file,
@@ -240,8 +252,10 @@ test('findSummaryCommentDetails matches existing walkthrough and tier summary co
   assert.equal(details?.id, 12)
 })
 
-test('README documents single-workflow scope of concurrency.group for walkthrough serialization', async () => {
+test('README documents repository scoped concurrency and uses the same group for both PR triggers', async () => {
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
-  assert.match(readme, /concurrency\.group.*only serializes runs within the same workflow file/i)
-  assert.match(readme, /megalens-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.issue\.number \}\}/)
+  assert.match(readme, /GitHub Actions shares concurrency groups across workflow files in the same repository/)
+  const groups = [...readme.matchAll(/^concurrency:\n  group: (\S+)-\$\{\{ github\.event\.(pull_request|issue)\.number \}\}\n  cancel-in-progress: true$/gm)]
+  assert.deepEqual(groups.map(([, , event]) => event), ['pull_request', 'issue'])
+  assert.equal(groups[0][1], groups[1][1])
 })
