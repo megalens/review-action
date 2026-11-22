@@ -19,7 +19,7 @@ inputs:
     description: 'Pinned base SHA (40-hex). Required in every mode on workflow_dispatch; also used by review on PRs.'
     required: false
   inline:
-    description: 'Post inline PR review comments for strong findings (true or false; false posts summary only, used when MegaLens GitHub App is active).'
+    description: 'Post inline PR review comments for strong findings (true or false; false skips inline comments, for example when the MegaLens GitHub App is active).'
     required: false
   findings-path:
     description: 'Path to read or write megalens.findings/v1 JSON (used by review and publish modes).'

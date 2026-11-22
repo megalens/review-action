@@ -16,6 +16,7 @@ import {
   sanitizeText,
   summaryMarker,
   titleHash,
+  WALKTHROUGH_MARKER,
 } from '../src/format.js'
 import { createGitHubApi } from '../src/github-api.js'
 
@@ -330,8 +331,9 @@ test('4. findings outside hunks, without line, or on files without patch go to <
   assert.equal(res.strongFindings.length, 0)
   assert.equal(res.normalFindings.length, 3)
   assert.equal(api.createdReviews.length, 0)
-  assert.equal(api.createdComments.length, 1)
-  const body = api.createdComments[0]
+  assert.equal(api.createdComments.length, 2)
+  assert.ok(api.createdComments.some((body) => body.startsWith(WALKTHROUGH_MARKER)))
+  const body = api.createdComments.find((body) => body.startsWith(summaryMarker('standard')))
   assert.ok(body.includes('<details>'))
   assert.ok(body.includes('Out of hunk'))
   assert.ok(body.includes('No line number'))
@@ -365,8 +367,9 @@ test('5. computeEffectiveStatus and summary never report incomplete run clean', 
 
   assert.equal(res.status, 'partial')
   assert.equal(res.exitCode, 0)
-  assert.ok(api.createdComments[0].includes('Partial review'))
-  assert.ok(!api.createdComments[0].includes('No findings on the changed diff hunks'))
+  const summary = api.createdComments.find((body) => body.startsWith(summaryMarker('standard')))
+  assert.ok(summary.includes('Partial review'))
+  assert.ok(!summary.includes('No findings on the changed diff hunks'))
 })
 
 // 6. Partial/failed fails job as "incomplete" when fail-on is set
@@ -908,5 +911,6 @@ test('14e. two-job split: mode=review writes findings without posting; mode=publ
   assert.equal(publishRes.status, 'complete')
   assert.equal(publishRes.strongFindings.length, 1)
   assert.equal(publishApi.createdReviews.length, 1)
-  assert.equal(publishApi.createdComments.length, 1)
+  assert.equal(publishApi.createdComments.length, 2)
+  assert.ok(publishApi.createdComments.some((body) => body.startsWith(WALKTHROUGH_MARKER)))
 })

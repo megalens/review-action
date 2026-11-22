@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { FORK_SKIP_SUMMARY, runAction } from '../src/action.js'
 import { parseCommentCommand } from '../src/commands.js'
+import { WALKTHROUGH_MARKER } from '../src/format.js'
 import { createGitHubApi } from '../src/github-api.js'
 
 const PATCH = '@@ -1,2 +1,3 @@\n const a = 1\n+const b = 2\n'
@@ -146,7 +147,8 @@ describe('commenter permission check and /megalens commands', () => {
     assert.equal(engineCalls[0].baseSha, 'base888')
     assert.equal(engineCalls[0].headSha, 'head999')
     assert.ok(fetchCalls.some((c) => c.url.endsWith('/collaborators/alice/permission')))
-    assert.equal(createdComments.length, 1)
+    assert.equal(createdComments.length, 2)
+    assert.ok(createdComments.some((body) => body.startsWith(WALKTHROUGH_MARKER)))
   })
 
   it('ignores /megalens review from a user with read or none permission', async () => {

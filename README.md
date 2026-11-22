@@ -9,7 +9,7 @@ Runs the `megalens-review` engine CLI (`ENGINE-V2-CONTRACT.md`) inside an isolat
 - **Three-job isolation (`create` -> `review` -> `publish`):**
   1. **`create` job (`mode: create`, no checkout, `permissions: {}` on `pull_request`):** holds `megalens-token`, calls `POST /api/v2/reviews` with `repo`, `base_sha`, `head_sha`, and `tier`, and outputs `review_id` and `review_key`. The short-lived `review_key` is **not** masked in `create` (GitHub drops masked job outputs) and is never printed or logged.
   2. **`review` job (`mode: review`, `permissions: contents: read` only):** its **first step** masks `review_key` with `::add-mask::`, checks out PR code with `persist-credentials: false`, never receives `megalens-token` or `pull-requests: write`, runs the engine CLI with allowlisted env (`MEGALENS_REVIEW_ID` and `MEGALENS_REVIEW_KEY` only), and uploads `findings.json` as artifact `artifact-name` (default `megalens-findings`).
-  3. **`publish` job (`mode: publish`, `permissions: contents: read`, `pull-requests: write`, no checkout):** holds **no** MegaLens/OpenAI secrets and does **not** check out PR code. It downloads the `megalens-findings` artifact, validates it strictly against `megalens.findings/v1` (size cap, types, string lengths, enums, no extra fields), sanitizes all strings, and posts inline review comments + one tier-scoped summary comment (`<!-- megalens:review:v1:<tier> -->`).
+  3. **`publish` job (`mode: publish`, `permissions: contents: read`, `pull-requests: write`, no checkout):** holds **no** MegaLens/OpenAI secrets and does **not** check out PR code. It downloads the `megalens-findings` artifact, validates it strictly against `megalens.findings/v1` (size cap, types, string lengths, enums, no extra fields), sanitizes all strings, and posts inline review comments, one tier-scoped findings summary (`<!-- megalens:review:v1:<tier> -->`), and a PR walkthrough.
 - **Minimum permissions (`permissions: {}` at top level):**
   - `contents: read` — read repository files for review / PR metadata.
   - `pull-requests: write` — post the PR review for `strong` P0/P1 findings and create/update the PR summary comment via the PR/issue comments endpoint. **`issues: write` is not needed.**
@@ -226,7 +226,11 @@ jobs:
 > - `off`: the Action only checks and logs. It never calls sudo.
 >
 > To do the setup yourself (self-hosted runners, or `setup-sandbox: off`): `sudo apt-get install -y bubblewrap`, then if the sandbox is still blocked `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` and `sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict` (and `/etc/apparmor.d/unprivileged_userns` if that file exists). If the sandbox still cannot start, the engine stops before any review with exit code 4 and nothing is charged.
-> Set `inline: false` in `publish` to post summary only (for example, when the MegaLens GitHub App is active on the repository).
+> Set `inline: false` in `publish` to skip inline comments (for example, when the MegaLens GitHub App is active on the repository).
+
+Open **Fix prompt** under any finding to copy a plain text prompt into your coding tool. The prompt includes the location, the reported problem, the expected behavior, and a request to add a test.
+
+After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same PR concurrency group and comment author across the workflows above so publishing runs share the comment.
 
 ## Usage: Manual Run Without a Pull Request (`workflow_dispatch`)
 
@@ -269,7 +273,7 @@ Wire the inputs into the `with:` blocks of the three jobs as `tier: ${{ inputs.t
 | `artifact-name` | `megalens-findings` | Artifact name for `findings.json` shared between `review` and `publish`. |
 | `head-sha` | `""` | Pinned PR head SHA for `review` and `publish` modes (40-hex SHA). |
 | `base-sha` | `""` | Pinned PR base SHA for `review` and `publish` modes (40-hex SHA). |
-| `inline` | `""` (`true` unless App active) | `true` or `false`; `false` posts summary only (used when the MegaLens GitHub App is active). |
+| `inline` | `""` (`true` unless App active) | `true` or `false`. Set `false` to skip inline comments when the MegaLens GitHub App is active. |
 | `findings-path` | `""` | Path to read/write `findings.json` when splitting `review` and `publish` jobs. |
 | `megalens-token` | `""` | MegaLens account token for `create` mode (never pass to `review` or `publish`). |
 | `review-id` | `""` | MegaLens review ID for `review` mode (or pass `MEGALENS_REVIEW_ID` env). |

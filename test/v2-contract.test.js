@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import { BYO_FORK_SKIP_SUMMARY, FORK_SKIP_SUMMARY, runAction, selectNewInlineFindings } from '../src/action.js'
 import { buildChildEnv, resolveAuthEnv, runEngineCli } from '../src/engine.js'
 import { MAX_FINDINGS_BYTES, parseFindingsDocument } from '../src/findings.js'
+import { WALKTHROUGH_MARKER } from '../src/format.js'
 
 const ACTION_ROOT = new URL('..', import.meta.url).pathname
 
@@ -498,14 +499,17 @@ test('publish mode: sanitizes untrusted text, respects inline=false, dedupes App
   assert.equal(resNoInline.exitCode, 0)
   assert.equal(downloaded[0].name, 'my-findings')
   assert.equal(api.calls.createPullReview.length, 0)
-  assert.equal(api.calls.createIssueComment.length, 1)
-  const summaryBody = api.calls.createIssueComment[0]
-  assert.equal(summaryBody.includes('<script>'), false)
-  assert.equal(summaryBody.includes('@org/team'), false)
-  assert.equal(summaryBody.includes('![bad]('), false)
-  assert.equal(summaryBody.includes('```'), false)
+  assert.equal(api.calls.createIssueComment.length, 2)
+  const [walkthrough, summaryBody] = api.calls.createIssueComment
+  const visibleSummary = summaryBody.replace(/^  ```\n[\s\S]*?^  ```$/gm, '')
+  assert.equal(visibleSummary.includes('<script>'), false)
+  assert.equal(visibleSummary.includes('@org/team'), false)
+  assert.equal(visibleSummary.includes('![bad]('), false)
+  assert.equal(visibleSummary.includes('```'), false)
   assert.equal(/\n\/megalens deep/.test(summaryBody), false)
   assert.equal(summaryBody.includes(reviewKey), false)
+  assert.ok(walkthrough.startsWith(WALKTHROUGH_MARKER))
+  assert.equal(walkthrough.includes(reviewKey), false)
   assert.equal(hNoInline.masked.includes(reviewKey), true)
 
   // App overlap within 5 lines (different title) moves finding to summary and skips duplicate inline comment.

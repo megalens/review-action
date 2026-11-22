@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { sortFindings } from './findings.js'
 import { redactSecrets } from './redact.js'
 
 export const MAX_SUMMARY_LENGTH = 65_000
@@ -15,6 +16,7 @@ export function summaryMarker(tier = 'standard') {
 }
 
 export const SUMMARY_MARKER = summaryMarker('standard')
+export const WALKTHROUGH_MARKER = '<!-- megalens:walkthrough:v1 -->'
 
 /**
  * Hidden metadata line embedded in the summary comment to support burst guard per head+tier.
@@ -81,8 +83,8 @@ export function titleHash(title) {
  * @param {{ file: string, line_start: number, line_end?: number, title: string }} finding
  * @returns {string}
  */
-export function inlineMarker(finding) {
-  const file = encodeURIComponent(String(finding?.file ?? '')).replace(/--/g, '%2D%2D')
+export function inlineMarker(finding, extraSecrets) {
+  const file = encodeURIComponent(redactSecrets(finding?.file ?? '', extraSecrets)).replace(/--/g, '%2D%2D')
   const start = Number(finding?.line_start) || 0
   const end = finding?.line_end && finding.line_end >= start ? Number(finding.line_end) : start
   const hash = titleHash(finding?.title ?? '')
@@ -159,6 +161,7 @@ export function sanitizeText(text, max, opts = {}) {
     .replace(/>/g, '&gt;')
     .replace(/@(?=[A-Za-z0-9_-])/g, '@\u200b')
     .replace(/```/g, "'''")
+    .replace(/~~~+/g, (run) => `~\u200b${run.slice(1)}`)
     .replace(/!\[/g, '!\u200b[')
     .replace(/\]\(/g, ']\u200b(')
     .replace(/\]\[/g, ']\u200b[')
@@ -176,20 +179,53 @@ function sentenceEnd(text) {
   return /[.…!?]$/.test(text) ? text : `${text}.`
 }
 
+/** Build a copyable prompt using only the finding's location and description. */
+export function formatFixPrompt(finding, extraSecrets) {
+  // Keep every model field on a single labelled line so it cannot close the code fence.
+  const field = (value, max) => clip(redactSecrets(value ?? '', extraSecrets).replace(/\s+/g, ' ').trim(), max)
+  const file = redactSecrets(finding.file ?? '', extraSecrets).replace(/[\r\n\t]/g,
+    (char) => JSON.stringify(char).slice(1, -1))
+  const title = sentenceEnd(field(finding.title, 200)) || 'Investigate the reported finding.'
+  const claim = sentenceEnd(field(finding.claim, 400))
+  const scenario = sentenceEnd(field(finding.failure_scenario, 300))
+  const start = finding.line_start
+  const end = finding.line_end
+  const lines = start ? (end > start ? `${start} to ${end}` : String(start)) : 'No line specified'
+
+  return [
+    '<details>',
+    '<summary>Fix prompt</summary>',
+    '',
+    '```',
+    'Verify this finding against the code before editing.',
+    '',
+    `File: ${file || 'No file specified'}`,
+    `Lines: ${lines}`,
+    `Finding: ${title}`,
+    `Why: ${[claim, scenario].filter(Boolean).join(' ') || 'Check when the reported issue occurs and what it affects.'}`,
+    `Expected behavior: ${scenario ? 'Handle the case described above without the reported failure.' : 'Correct the reported behavior and preserve behavior for other cases.'}`,
+    '',
+    'Change only what is needed. Keep the tests passing. Add a test that reproduces the issue before the fix and passes after it.',
+    '```',
+    '',
+    '</details>',
+  ].join('\n')
+}
+
 /**
  * Format one strong finding as an inline PR review comment.
  * @param {{ id: string, file: string, line_start: number, line_end?: number, title: string, claim?: string, failure_scenario?: string, priority?: string }} finding
  * @returns {string}
  */
-export function formatInlineComment(finding) {
-  const priority = sanitizeText(finding.priority || 'P1', 10, { singleLine: true })
-  const title = sanitizeText(finding.title || 'Finding', 200, { singleLine: true })
+export function formatInlineComment(finding, extraSecrets) {
+  const priority = sanitizeText(finding.priority || 'P1', 10, { singleLine: true, extraSecrets })
+  const title = sanitizeText(finding.title || 'Finding', 200, { singleLine: true, extraSecrets })
   const parts = [`**${priority} (strong): ${title}**`]
 
-  const claim = finding.claim ? sanitizeText(finding.claim, 800) : ''
+  const claim = finding.claim ? sanitizeText(finding.claim, 800, { extraSecrets }) : ''
   if (claim) parts.push('', claim)
 
-  const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 500) : ''
+  const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 500, { extraSecrets }) : ''
   if (scenario) parts.push('', `Failure scenario: ${scenario}`)
 
   if (finding.line_end && finding.line_end > finding.line_start) {
@@ -198,21 +234,68 @@ export function formatInlineComment(finding) {
 
   parts.push(
     '',
+    formatFixPrompt(finding, extraSecrets),
+    '',
     '<sub>MegaLens static review. A second opinion on the diff, not a verdict.</sub>',
-    inlineMarker(finding),
+    inlineMarker(finding, extraSecrets),
   )
   return parts.join('\n')
 }
 
-function formatSummaryItem(finding) {
-  const priority = sanitizeText(finding.priority || 'P2', 10, { singleLine: true })
+function formatSummaryItem(finding, extraSecrets) {
+  const options = { singleLine: true, extraSecrets }
+  const priority = sanitizeText(finding.priority || 'P2', 10, options)
   const where = finding.file
-    ? ` \`${sanitizeText(finding.file, 200, { singleLine: true })}${finding.line_start ? `:${finding.line_start}` : ''}\``
+    ? ` <code>${sanitizeText(finding.file, 200, options)}${finding.line_start ? `:${finding.line_start}` : ''}</code>`
     : ''
-  const title = sentenceEnd(sanitizeText(finding.title || 'Finding', 200, { singleLine: true }))
-  const claim = finding.claim ? sanitizeText(finding.claim, 300, { singleLine: true }) : ''
+  const title = sentenceEnd(sanitizeText(finding.title || 'Finding', 200, options))
+  const claim = finding.claim ? sanitizeText(finding.claim, 300, options) : ''
   const appNote = finding.alsoFoundByApp ? ' *(also found by the App)*' : ''
-  return `- **${priority}**${where}: ${title}${claim ? ` ${claim}` : ''}${appNote}`
+  const prompt = formatFixPrompt(finding, extraSecrets).replace(/^(?=.)/gm, '  ')
+  return `- **${priority}**${where}: ${title}${claim ? ` ${claim}` : ''}${appNote}\n\n${prompt}\n`
+}
+
+const FILE_CHANGE_LABELS = new Map([
+  ['added', 'Added'], ['removed', 'Removed'], ['renamed', 'Renamed'], ['modified', 'Modified'],
+  ['copied', 'Copied'], ['changed', 'Changed'], ['unchanged', 'Unchanged'],
+])
+
+/** Format the PR-wide walkthrough from kept engine findings and the GitHub PR file list. */
+export function formatWalkthroughComment({ headSha, findings = [], pullFiles, extraSecrets }) {
+  const text = (value, max) => sanitizeText(value, max, { singleLine: true, extraSecrets })
+  const path = (value) => `<code>${text(value, 200)}</code>`
+  const files = pullFiles.filter((file) => typeof file?.filename === 'string' && file.filename)
+  const lines = [WALKTHROUGH_MARKER, `### MegaLens PR walkthrough for \`${text(headSha?.slice(0, 7), 7)}\``, '', '**What changed**', '']
+
+  for (const file of files.slice(0, 15)) {
+    const change = FILE_CHANGE_LABELS.get(file.status) ?? 'Changed'
+    const from = file.previous_filename ? ` from ${path(file.previous_filename)}` : ''
+    const counts = Number.isInteger(file.additions) && Number.isInteger(file.deletions)
+      ? ` (+${file.additions} / −${file.deletions})`
+      : ''
+    lines.push(`* ${path(file.filename)} · ${change}${from}${counts}`)
+  }
+  if (files.length > 15) lines.push(`* and ${files.length - 15} more`)
+  if (files.length === 0) lines.push('No changed files reported.')
+
+  const focus = sortFindings(findings.filter((finding) => finding.strength === 'strong')).slice(0, 3)
+  const focusFiles = new Set(focus.map((finding) => finding.file))
+  const reviewFirst = focus.map((finding) => {
+    const location = finding.file ? `${path(finding.file)}${finding.line_start ? `:${finding.line_start}` : ''} · ` : ''
+    return `${location}${text(finding.title, 120)}`
+  })
+  const changedLines = (file) => file.changes ?? (file.additions ?? 0) + (file.deletions ?? 0)
+  const largest = files.filter((file) => !focusFiles.has(file.filename) && changedLines(file) > 0)
+    .sort((a, b) => changedLines(b) - changedLines(a))
+    .slice(0, 3 - reviewFirst.length)
+  for (const file of largest) {
+    const count = changedLines(file)
+    reviewFirst.push(`${path(file.filename)} · ${count} changed ${count === 1 ? 'line' : 'lines'}`)
+  }
+
+  lines.push('', '**Look at first**', '', ...reviewFirst.map((item) => `* ${item}`))
+  if (reviewFirst.length === 0) lines.push('No strong findings or changed line counts to prioritize.')
+  return lines.join('\n')
 }
 
 /**
@@ -270,11 +353,12 @@ export function formatSummaryComment(input) {
   const status = doc?.status ?? 'failed'
   const strong = input.strongFindings ?? []
   const normal = input.normalFindings ?? []
+  const text = (value, max, singleLine = true) => sanitizeText(value, max, { singleLine, extraSecrets: input.extraSecrets })
   const inlineCount = input.inlinePostedCount ?? 0
   const nowTs = typeof input.now === 'number' && Number.isFinite(input.now) ? input.now : Date.now()
   const failedPasses = (doc?.passes ?? [])
     .filter((p) => !p?.superseded_by && p?.status !== 'ok')
-    .map((p) => sanitizeText(p.name, 60, { singleLine: true }))
+    .map((p) => text(p.name, 60))
 
   const headerLines = [
     summaryMarker(tier),
@@ -283,16 +367,16 @@ export function formatSummaryComment(input) {
     '',
   ]
   const metaParts = []
-  if (tier) metaParts.push(`Tier: \`${sanitizeText(tier, 20, { singleLine: true })}\``)
-  if (doc?.review_id) metaParts.push(`Review: \`${sanitizeText(doc.review_id, 64, { singleLine: true })}\``)
+  if (tier) metaParts.push(`Tier: \`${text(tier, 20)}\``)
+  if (doc?.review_id) metaParts.push(`Review: \`${text(doc.review_id, 64)}\``)
   if (metaParts.length > 0) headerLines.push(metaParts.join(' · '), '')
 
   if (input.tierWarning) {
-    headerLines.push(`> Warning: ${sanitizeText(input.tierWarning, 240, { singleLine: true })}`, '')
+    headerLines.push(`> Warning: ${text(input.tierWarning, 240)}`, '')
   }
 
   const docNotes = Array.isArray(doc?.notes)
-    ? doc.notes.map((n) => sanitizeText(n, 300, { singleLine: true })).filter(Boolean)
+    ? doc.notes.map((n) => text(n, 300)).filter(Boolean)
     : []
   if (docNotes.length > 0) {
     for (const note of docNotes) {
@@ -303,7 +387,7 @@ export function formatSummaryComment(input) {
 
   if (status === 'failed') {
     const detail = input.errorMessage
-      ? ` ${sentenceEnd(sanitizeText(input.errorMessage, 400))}`
+      ? ` ${sentenceEnd(text(input.errorMessage, 400, false))}`
       : failedPasses.length > 0
         ? ` Failed passes: ${failedPasses.join(', ')}.`
         : ''
@@ -322,69 +406,60 @@ export function formatSummaryComment(input) {
 
   const omittedFilesCount = (doc?.sandbox?.excluded_files ?? 0) + (doc?.sandbox?.skipped_files ?? 0)
 
-  const strongLines = []
+  const strongHeader = []
   if (strong.length > 0) {
     const inlineNote = inlineCount > 0 ? ` (${inlineCount} inline on the diff)` : ''
-    strongLines.push(`**Strong findings (${strong.length})${inlineNote}:**`, '')
-    for (const f of strong) {
-      strongLines.push(formatSummaryItem(f))
-    }
-    strongLines.push('')
+    strongHeader.push(`**Strong findings (${strong.length})${inlineNote}:**`, '')
   } else if (status === 'complete' && normal.length === 0) {
     if (omittedFilesCount > 0) {
-      strongLines.push('No findings on the reviewed files, though some changed files were excluded or skipped (see notes above).', '')
+      strongHeader.push('No findings on the reviewed files, though some changed files were excluded or skipped (see notes above).', '')
     } else {
-      strongLines.push('No findings on the changed diff hunks.', '')
+      strongHeader.push('No findings on the changed diff hunks.', '')
     }
   } else if (status === 'partial' && normal.length === 0) {
-    strongLines.push('No findings were reported by the completed passes, though this review is incomplete.', '')
+    strongHeader.push('No findings were reported by the completed passes, though this review is incomplete.', '')
   } else if (status === 'complete') {
-    strongLines.push(`0 inline strong findings; ${normal.length} other finding${normal.length === 1 ? '' : 's'} below.`, '')
+    strongHeader.push(`0 inline strong findings; ${normal.length} other finding${normal.length === 1 ? '' : 's'} below.`, '')
   } else if (status === 'partial') {
-    strongLines.push(`0 inline strong findings from completed passes; ${normal.length} other finding${normal.length === 1 ? '' : 's'} below.`, '')
+    strongHeader.push(`0 inline strong findings from completed passes; ${normal.length} other finding${normal.length === 1 ? '' : 's'} below.`, '')
   }
 
-  const normalItems = normal.map(formatSummaryItem)
+  const strongItems = strong.map((finding) => formatSummaryItem(finding, input.extraSecrets))
+  const normalItems = normal.map((finding) => formatSummaryItem(finding, input.extraSecrets))
 
   const footerLines = []
   if (input.inlineWarning) {
-    footerLines.push(`Note: ${sanitizeText(input.inlineWarning, 240)}`, '')
+    footerLines.push(`Note: ${text(input.inlineWarning, 240, false)}`, '')
   }
   footerLines.push('<sub>Static review only: no code was run. Findings are a second opinion for you to check, not a verdict.</sub>')
 
-  const build = (shownNormal, omittedNormalCount) => {
-    const lines = [...headerLines, ...strongLines]
-    if (normalItems.length > 0) {
+  const omitted = (count) => `- and ${count} more not listed here.\n`
+  const build = () => {
+    const lines = [...headerLines, ...strongHeader, ...strongItems]
+    if (strong.length > strongItems.length) lines.push(omitted(strong.length - strongItems.length))
+    if (normal.length > 0) {
       lines.push(
         `<details>`,
-        `<summary>${normalItems.length} summary finding${normalItems.length === 1 ? '' : 's'}</summary>`,
+        `<summary>${normal.length} summary finding${normal.length === 1 ? '' : 's'}</summary>`,
         '',
-        ...shownNormal,
+        ...normalItems,
       )
-      if (omittedNormalCount > 0) {
-        lines.push(`- and ${omittedNormalCount} more not listed here.`)
-      }
-      lines.push('', '</details>', '')
+      if (normal.length > normalItems.length) lines.push(omitted(normal.length - normalItems.length))
+      lines.push('</details>', '')
     }
     lines.push(...footerLines)
     return lines.join('\n')
   }
 
-  let body = build(normalItems, 0)
+  const body = build()
   if (body.length <= MAX_SUMMARY_LENGTH) return body
 
-  const keptNormal = [...normalItems]
-  let omitted = 0
-  while (body.length > MAX_SUMMARY_LENGTH && keptNormal.length > 0) {
-    keptNormal.pop()
-    omitted += 1
-    body = build(keptNormal, omitted)
+  // Reserve room for both omission notices and drop whole findings to keep the Markdown balanced.
+  let length = body.length + omitted(strong.length).length + omitted(normal.length).length + 2
+  for (const items of [normalItems, strongItems]) {
+    while (length > MAX_SUMMARY_LENGTH && items.length > 0) {
+      length -= items.pop().length + 1
+    }
   }
-  if (body.length <= MAX_SUMMARY_LENGTH) return body
-
-  while (body.length > MAX_SUMMARY_LENGTH && strongLines.length > 3) {
-    strongLines.splice(strongLines.length - 2, 1)
-    body = build(keptNormal, omitted)
-  }
-  return body.slice(0, MAX_SUMMARY_LENGTH)
+  return build()
 }

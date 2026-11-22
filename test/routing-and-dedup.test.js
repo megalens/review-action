@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { runAction } from '../src/action.js'
-import { inlineMarker, SUMMARY_MARKER, titleHash } from '../src/format.js'
+import { inlineMarker, SUMMARY_MARKER, titleHash, WALKTHROUGH_MARKER } from '../src/format.js'
 
 const PATCH = [
   '@@ -10,6 +10,7 @@ export function run(x) {',
@@ -121,13 +121,13 @@ describe('strong vs normal routing and fail-on', () => {
       new RegExp(`<!-- megalens-review:v1 file=src%2Fapp\\.js lines=11-11 title=${titleHash('Null dereference on x')} -->`),
     )
 
-    assert.equal(createdComments.length, 1)
+    assert.equal(createdComments.length, 2)
+    assert.ok(createdComments.some((body) => body.startsWith(WALKTHROUGH_MARKER)))
     assert.equal(updatedComments.length, 0)
-    const summary = createdComments[0]
-    assert.ok(summary.startsWith(SUMMARY_MARKER))
+    const summary = createdComments.find((body) => body.startsWith(SUMMARY_MARKER))
     assert.match(summary, /\*\*Strong findings \(1\)/)
-    const detailsMatches = summary.match(/<details>/g) ?? []
-    assert.equal(detailsMatches.length, 1, 'exactly ONE collapsed <details> block')
+    assert.equal(summary.match(/^<details>$/gm).length, 1, 'one group for all summary findings')
+    assert.equal(summary.match(/<summary>Fix prompt<\/summary>/g).length, 3, 'one prompt per finding')
     assert.match(summary, /2 summary findings/)
     assert.match(summary, /Missing validation on baz\(\)/)
     assert.match(summary, /Return flag unused/)
@@ -225,7 +225,7 @@ describe('rerun de-duplication marker', () => {
           ]
         },
         async createPullReview(_o, _r, _n, _sha, comments) { reviews.push(comments); return 901 },
-        async findSummaryComment() { return 555 },
+        async findSummaryComment(_o, _r, _n, marker) { return marker === SUMMARY_MARKER ? 555 : 557 },
         async createIssueComment(_o, _r, _n, body) { createdComments.push(body); return 556 },
         async updateIssueComment(_o, _r, id, body) { updatedComments.push({ id, body }) },
       }),
@@ -233,9 +233,9 @@ describe('rerun de-duplication marker', () => {
 
     assert.equal(res.exitCode, 0)
     assert.equal(createdComments.length, 0)
-    assert.equal(updatedComments.length, 1)
-    assert.equal(updatedComments[0].id, 555)
-    assert.ok(updatedComments[0].body.includes(SUMMARY_MARKER))
+    assert.equal(updatedComments.length, 2)
+    assert.ok(updatedComments.find(({ id }) => id === 555).body.startsWith(SUMMARY_MARKER))
+    assert.ok(updatedComments.find(({ id }) => id === 557).body.startsWith(WALKTHROUGH_MARKER))
 
     assert.equal(reviews.length, 1)
     assert.equal(reviews[0].length, 1, 'skips f-existing at line 11, posts only f-new at line 12')

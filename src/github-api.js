@@ -94,7 +94,7 @@ export function createGitHubApi(token, opts = {}) {
 
   async function findSummaryCommentDetails(owner, repo, issueNumber, marker, viewerLogin) {
     const ownLogin = (viewerLogin || await getViewerLogin()).toLowerCase()
-    for (let page = 1; page <= 10; page++) {
+    for (let page = 1; ; page++) {
       const res = await call('GET', `${repoPath(owner, repo)}/issues/${issueNumber}/comments?per_page=100&page=${page}`)
       if (!res.ok) return fail(res, 'list issue comments')
       const batch = await res.json()
@@ -105,7 +105,7 @@ export function createGitHubApi(token, opts = {}) {
           typeof c?.user?.login === 'string' &&
           c.user.login.toLowerCase() === ownLogin &&
           typeof c?.body === 'string' &&
-          c.body.includes(marker),
+          (c.body === marker || c.body.startsWith(`${marker}\n`)),
       )
       if (hit) {
         return {

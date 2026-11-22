@@ -31,11 +31,13 @@ import {
   formatInlineComment,
   formatSummaryComment,
   formatTooLargeComment,
+  formatWalkthroughComment,
   MAX_INLINE_COMMENTS,
   parseInlineMarker,
   parseSummaryMeta,
   summaryMarker,
   titleHash,
+  WALKTHROUGH_MARKER,
 } from './format.js'
 import { createGitHubApi } from './github-api.js'
 import { createMegaLensReview, DEFAULT_MEGALENS_API_URL } from './megalens-api.js'
@@ -985,27 +987,25 @@ export async function runAction(deps = {}) {
 
   // Every write to the shared PR comment or job summary goes through here. Right before the write, the live PR
   // head is re-read: if a newer commit exists, this run writes nothing (one log line).
-  let staleHeadSeen = null
-  const publishShared = async (body, tierForMarker, summaryText = body) => {
-    const marker = summaryMarker(tierForMarker)
+  const upsertPrComment = async (body, marker) => {
     const existingId = await api.findSummaryComment(owner, repo, pullNumber, marker)
     if (typeof api.getPull === 'function') {
       const live = await api.getPull(owner, repo, pullNumber)
       if (live?.headSha && live.headSha !== headSha) {
-        staleHeadSeen = live.headSha
         warn(`MegaLens: PR head moved from ${headSha.slice(0, 7)} to ${live.headSha.slice(0, 7)}; nothing written for this run.`)
         return { action: 'skipped_stale' }
       }
     }
-    let result
     if (existingId !== null) {
       await api.updateIssueComment(owner, repo, existingId, body)
-      result = { action: 'updated', commentId: existingId }
-    } else {
-      const createdId = await api.createIssueComment(owner, repo, pullNumber, body)
-      result = { action: 'created', commentId: createdId }
+      return { action: 'updated', commentId: existingId }
     }
-    await writeSummary(summaryText)
+    const createdId = await api.createIssueComment(owner, repo, pullNumber, body)
+    return { action: 'created', commentId: createdId }
+  }
+  const publishShared = async (body, tierForMarker, summaryText = body) => {
+    const result = await upsertPrComment(body, summaryMarker(tierForMarker))
+    if (result.action !== 'skipped_stale') await writeSummary(summaryText)
     return result
   }
   const staleResult = async () => {
@@ -1030,6 +1030,7 @@ export async function runAction(deps = {}) {
       tierWarning,
       errorMessage: reason,
       now: nowMs,
+      extraSecrets: secretValues,
     })
     if ((await publishShared(summary, selectedTier)).action === 'skipped_stale') return staleResult()
     await setOutput('status', 'failed')
@@ -1050,6 +1051,7 @@ export async function runAction(deps = {}) {
       tierWarning,
       errorMessage: mismatchMsg,
       now: nowMs,
+      extraSecrets: secretValues,
     })
     if ((await publishShared(summary, effectiveTier)).action === 'skipped_stale') return staleResult()
     await setOutput('status', 'failed')
@@ -1094,11 +1096,12 @@ export async function runAction(deps = {}) {
   let allStrongFindings = []
   let displayedStrongFindings = []
   let summaryFindings = []
+  let pullFiles = null
   let inlinePostedCount = 0
   let inlineWarning = null
 
   if (effectiveStatus !== 'failed') {
-    const pullFiles = await api.listPullFiles(owner, repo, pullNumber)
+    pullFiles = await api.listPullFiles(owner, repo, pullNumber)
     const { inDiff, outOfDiff } = partitionFindingsByDiff(doc.findings, pullFiles)
     const sortedInDiff = sortFindings(inDiff)
     allStrongFindings = sortedInDiff.filter((f) => isStrongFinding(f, true))
@@ -1136,7 +1139,7 @@ export async function runAction(deps = {}) {
           path: f.file,
           line: f.line_start,
           side: 'RIGHT',
-          body: formatInlineComment(f),
+          body: formatInlineComment(f, secretValues),
         }))
         try {
           await api.createPullReview(owner, repo, pullNumber, headSha, reviewComments)
@@ -1165,7 +1168,17 @@ export async function runAction(deps = {}) {
     tierWarning,
     errorMessage: summaryErrorMessage,
     now: nowMs,
+    extraSecrets: secretValues,
   })
+  if (pullFiles !== null) {
+    const walkthrough = formatWalkthroughComment({
+      headSha,
+      pullFiles,
+      findings: [...displayedStrongFindings, ...summaryFindings],
+      extraSecrets: secretValues,
+    })
+    if ((await upsertPrComment(walkthrough, WALKTHROUGH_MARKER)).action === 'skipped_stale') return staleResult()
+  }
   if ((await publishShared(summary, effectiveTier)).action === 'skipped_stale') return staleResult()
 
   const gateStrongCount = effectiveStatus === 'failed' ? 0 : allStrongFindings.length

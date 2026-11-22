@@ -793,7 +793,8 @@ describe('Fable final review fixes (items 1-8)', () => {
     assert.equal(h.outputs['strong-count'], '1')
     assert.equal(res.exitCode, 1)
     assert.match(res.error, /Found 1 strong finding\(s\) with fail-on=strong/)
-    assert.match(postedSummaries[0], /also found by the App/)
+    const summary = postedSummaries.find((body) => body.startsWith(summaryMarker('standard')))
+    assert.match(summary, /also found by the App/)
   })
 
   it('8. sanitizeText breaks bare URLs, reference-style links, and issue cross-references', () => {
