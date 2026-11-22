@@ -230,7 +230,7 @@ jobs:
 
 Open **Fix prompt** under any finding to copy a plain text prompt into your coding tool. The prompt includes the location, the reported problem, the expected behavior, and a request to add a test.
 
-After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same PR concurrency group and comment author across the workflows above so publishing runs share the comment.
+After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same comment author across runs so `publish` updates the existing comment in place. Because GitHub Actions `concurrency.group` only serializes runs within the same workflow file (not across separate workflow files), combine `pull_request` and `issue_comment` into one workflow file with `group: megalens-${{ github.event.pull_request.number || github.event.issue.number }}` if you need cross-trigger serialization.
 
 ## Usage: Manual Run Without a Pull Request (`workflow_dispatch`)
 

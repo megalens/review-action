@@ -105,7 +105,7 @@ export function createGitHubApi(token, opts = {}) {
           typeof c?.user?.login === 'string' &&
           c.user.login.toLowerCase() === ownLogin &&
           typeof c?.body === 'string' &&
-          (c.body === marker || c.body.startsWith(`${marker}\n`)),
+          (c.body === marker || c.body.startsWith(`${marker}\n`) || c.body.startsWith(`${marker}\r\n`)),
       )
       if (hit) {
         return {

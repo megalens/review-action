@@ -100,7 +100,7 @@ export function inlineMarker(finding, extraSecrets) {
 export function parseInlineMarker(body) {
   if (typeof body !== 'string') return null
   const match =
-    /<!--\s*(megalens-review:v1|megalens(?::|-)app:v1|megalens:review:v1)\s+file=([^\s]+)\s+lines?=(\d+)(?:-(\d+))?\s+title=([0-9a-f]{8,64})\s*-->/i.exec(
+    /(?:^|\r?\n)<!--[ \t]*(megalens-review:v1|megalens(?::|-)app:v1|megalens:review:v1)[ \t]+file=([^\s]+)[ \t]+lines?=(\d+)(?:-(\d+))?[ \t]+title=([0-9a-f]{8,64})[ \t]*-->\s*$/i.exec(
       body,
     )
   if (!match) return null
@@ -181,9 +181,11 @@ function sentenceEnd(text) {
 
 /** Build a copyable prompt using only the finding's location and description. */
 export function formatFixPrompt(finding, extraSecrets) {
-  // Keep every model field on a single labelled line so it cannot close the code fence.
-  const field = (value, max) => clip(redactSecrets(value ?? '', extraSecrets).replace(/\s+/g, ' ').trim(), max)
-  const file = redactSecrets(finding.file ?? '', extraSecrets).replace(/[\r\n\t]/g,
+  // Keep every model field on a single labelled line so it cannot close the code fence or emit HTML comment markers.
+  const breakComments = (text) => text.replace(/<!(?=-)/g, '< !').replace(/--(?=>)/g, '- -')
+  const field = (value, max) =>
+    clip(breakComments(redactSecrets(value ?? '', extraSecrets)).replace(/\s+/g, ' ').trim(), max)
+  const file = breakComments(redactSecrets(finding.file ?? '', extraSecrets)).replace(/[\r\n\t]/g,
     (char) => JSON.stringify(char).slice(1, -1))
   const title = sentenceEnd(field(finding.title, 200)) || 'Investigate the reported finding.'
   const claim = sentenceEnd(field(finding.claim, 400))

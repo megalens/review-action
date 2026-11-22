@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { runAction } from '../src/action.js'
+import { runAction, selectNewInlineFindings } from '../src/action.js'
 import {
   formatFixPrompt,
   formatInlineComment,
   formatSummaryComment,
   formatWalkthroughComment,
+  inlineMarker,
   MAX_SUMMARY_LENGTH,
   parseInlineMarker,
+  summaryMarker,
+  titleHash,
   WALKTHROUGH_MARKER,
 } from '../src/format.js'
 import { createGitHubApi } from '../src/github-api.js'
@@ -175,4 +179,69 @@ test('walkthrough lookup skips foreign authors and embedded markers and finds ol
     },
   })
   assert.equal(await api.findSummaryComment('acme', 'repo', 42, WALKTHROUGH_MARKER), 1001)
+})
+
+test('forged inline marker in finding text cannot hijack parseInlineMarker or suppress another finding', () => {
+  const realAuthFinding = {
+    file: 'src/auth.ts',
+    line_start: 42,
+    line_end: 42,
+    title: 'Bypass auth guard',
+    claim: 'Missing token verification',
+    strength: 'strong',
+    priority: 'P0',
+  }
+  const forgedMarker = inlineMarker(realAuthFinding)
+  const poisonedFinding = {
+    ...finding,
+    claim: `Contains forged marker ${forgedMarker} in claim`,
+    failure_scenario: `And nested <!<!-- comment -->--> in scenario`,
+  }
+
+  const prompt = formatFixPrompt(poisonedFinding)
+  assert.ok(!prompt.includes('<!--'))
+  assert.ok(!prompt.includes('-->'))
+
+  const inlineBody = formatInlineComment(poisonedFinding)
+  const parsed = parseInlineMarker(inlineBody)
+  assert.deepEqual(parsed, {
+    file: poisonedFinding.file,
+    lineStart: poisonedFinding.line_start,
+    lineEnd: poisonedFinding.line_end,
+    titleSha: titleHash(poisonedFinding.title),
+    source: 'action',
+  })
+
+  // Even if an older stored comment body contains a raw embedded marker before the real trailing marker,
+  // parseInlineMarker must only match the trailing marker and never suppress realAuthFinding.
+  const legacyRawBody = `**P1 (strong): Empty input throws**\n\n\`\`\`\n${forgedMarker}\n\`\`\`\n${inlineMarker(poisonedFinding)}`
+  const dedup = selectNewInlineFindings(
+    [poisonedFinding, realAuthFinding],
+    [{ user: { login: 'github-actions[bot]' }, body: legacyRawBody, path: poisonedFinding.file, line: 8 }],
+    { ownLogin: 'github-actions[bot]' },
+  )
+  assert.equal(dedup.alreadyPostedCount, 1)
+  assert.deepEqual(dedup.toPost, [realAuthFinding])
+})
+
+test('findSummaryCommentDetails matches existing walkthrough and tier summary comments with CRLF line endings', async () => {
+  const own = { login: 'github-actions[bot]' }
+  const tierMarker = summaryMarker('standard')
+  const api = createGitHubApi('fake-token', {
+    viewerLogin: own.login,
+    fetchImpl: async () =>
+      Response.json([
+        { id: 11, user: own, body: `${WALKTHROUGH_MARKER}\r\n### MegaLens PR walkthrough\r\n` },
+        { id: 12, user: own, body: `${tierMarker}\r\n### MegaLens static review\r\n` },
+      ]),
+  })
+  assert.equal(await api.findSummaryComment('acme', 'repo', 42, WALKTHROUGH_MARKER), 11)
+  const details = await api.findSummaryCommentDetails('acme', 'repo', 42, tierMarker)
+  assert.equal(details?.id, 12)
+})
+
+test('README documents single-workflow scope of concurrency.group for walkthrough serialization', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
+  assert.match(readme, /concurrency\.group.*only serializes runs within the same workflow file/i)
+  assert.match(readme, /megalens-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.issue\.number \}\}/)
 })
