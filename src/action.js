@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { prepareSandbox, SETUP_MODES } from './sandbox.js'
 import { hasWritePermission, isBotUser, parseCommentCommand } from './commands.js'
-import { partitionFindingsByDiff } from './diff.js'
+import { partitionFindingsByDiff, resolveFindingPath } from './diff.js'
 import {
   BYO_DISABLED_MESSAGE,
   BYO_KEY_ENABLED,
@@ -49,12 +49,18 @@ const VALID_MODES = new Set(['create', 'review', 'publish', 'full'])
 const SUPPORTED_PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened'])
 const SAFE_ARTIFACT_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
 const SHA40_RE = /^[0-9a-f]{40}$/i
+const ZERO_SHA = '0'.repeat(40)
+const TRUSTED_PR_AUTHORS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 const APP_OVERLAP_LINE_WINDOW = 5
 export const BURST_GUARD_WINDOW_MS = 5 * 60 * 1000
 
 export const DEFAULT_APP_BOT_LOGINS = ['megalens[bot]', 'megalens-app[bot]', 'megalens-review[bot]']
 export const FORK_SKIP_SUMMARY = 'skipped: fork PR; a maintainer can comment /megalens review'
 export const BYO_FORK_SKIP_SUMMARY = 'skipped: BYO key is not used on fork PRs; use a MegaLens token'
+
+function changedPaths(files) {
+  return new Set(files.filter(f => typeof f?.filename === 'string' && f.status !== 'removed' && f.status !== 'unchanged').map(f => f.filename))
+}
 
 /**
  * Determine whether a pull_request webhook payload came from a fork.
@@ -345,6 +351,7 @@ export async function runAction(deps = {}) {
   const safeError = (err) => errorText(err, secretValues)
 
   const eventName = env.GITHUB_EVENT_NAME || ''
+  const isPush = eventName === 'push'
   if (eventName === 'pull_request_target') {
     const msg = 'Refusing to run on pull_request_target: checking out PR code with repository secrets is unsafe. Use pull_request for normal PRs and issue_comment for maintainer-triggered reviews.'
     await writeSummary(msg)
@@ -421,7 +428,7 @@ export async function runAction(deps = {}) {
   let selectedTier = inputs.tier
   let tierWarning = null
   let api = null
-  let isDispatch = false
+  let isStandalone = false
 
   if (eventName === 'pull_request') {
     if (!SUPPORTED_PR_ACTIONS.has(payload.action)) {
@@ -612,9 +619,8 @@ export async function runAction(deps = {}) {
         warn(tierWarning)
       }
     }
-  } else if (eventName === 'workflow_dispatch') {
-    // Dispatch has no pull request. Only someone with write access to the repo can start it
-    // (GitHub rule), so it is trusted like a maintainer comment. There is no fork path.
+  } else if (eventName === 'workflow_dispatch' || isPush) {
+    // Push and dispatch runs publish to the job summary without a pull request.
     const fail = async (msg) => {
       await writeSummary(msg)
       await setOutput('status', 'failed')
@@ -622,27 +628,32 @@ export async function runAction(deps = {}) {
     }
     // A workflow that already lists workflow_dispatch for its own reasons (a PR workflow started by hand) passes no SHAs.
     // Keep the old behaviour for it: a clean skip, not a red failure. Giving only one SHA is a real mistake and fails below.
-    if (!inputs.headSha && !inputs.baseSha) {
+    if (!isPush && !inputs.headSha && !inputs.baseSha) {
       await writeSummary(`skipped: unsupported event "${eventName}"`)
       setOutput('status', 'skipped')
       return { status: 'skipped', reason: 'unsupported_event', exitCode: 0 }
     }
     if (inputs.mode === 'full') {
-      return fail('mode "full" is not supported on workflow_dispatch; use create, review and publish.')
+      return fail(`mode "full" is not supported on ${eventName}; use create, review and publish.`)
     }
     if (inputs.tier !== 'standard' && inputs.tier !== 'deep') {
-      return fail(`Invalid tier "${inputs.tier}" for workflow_dispatch. Expected standard or deep.`)
+      return fail(`Invalid tier "${inputs.tier}" for ${eventName}. Expected standard or deep.`)
     }
-    if (!inputs.headSha || !inputs.baseSha) {
+    if (!isPush && (!inputs.headSha || !inputs.baseSha)) {
       const missing = [!inputs.headSha && 'head-sha', !inputs.baseSha && 'base-sha'].filter(Boolean).join(' and ')
       return fail(`Missing ${missing}: workflow_dispatch requires both head-sha and base-sha (40-hex SHAs).`)
     }
     ;({ owner, repo } = resolveRepository(payload, env))
-    baseSha = inputs.baseSha
-    headSha = inputs.headSha
+    baseSha = isPush ? payload.before : inputs.baseSha
+    headSha = isPush ? payload.after : inputs.headSha
+    if (isPush && (typeof baseSha !== 'string' || typeof headSha !== 'string' || !SHA40_RE.test(baseSha) || !SHA40_RE.test(headSha) || baseSha === ZERO_SHA || headSha === ZERO_SHA || baseSha === headSha)) {
+      await writeSummary('skipped: push has no commit range to review')
+      await setOutput('status', 'skipped')
+      return { status: 'skipped', reason: 'no_push_range', exitCode: 0 }
+    }
     isFork = false
     selectedTier = inputs.tier
-    isDispatch = true
+    isStandalone = true
 
     if (inputs.mode === 'create' && !inputs.megalensToken) {
       return fail('Missing megalens-token: create mode requires megalens-token.')
@@ -904,10 +915,8 @@ export async function runAction(deps = {}) {
     }
   }
 
-  if (isDispatch) {
-    // Publish with no pull request: validate findings.json (already done by parseFindingsDocument),
-    // keep it as the workflow artifact (uploaded by the review job), write a short job summary.
-    // No PR comment, no inline review, no burst guard, no head-moved check.
+  if (isStandalone) {
+    // The review job already uploaded findings.json. Publish the result for this pinned range.
     const reasonFor = () => {
       const rawTail = safeText(cliResult.stderr.trim().split('\n').slice(-1)[0] || '')
       return parseError
@@ -960,9 +969,35 @@ export async function runAction(deps = {}) {
     const lines = [
       `MegaLens review ${dStatus} (${dTier}) for ${headSha.slice(0, 7)}.`,
       `Findings: ${dFindings.length} (${byPriority}). Strong: ${strongN}.`,
-      'Findings are in the workflow artifact. No pull request was involved, so nothing was posted.',
+      isPush && dFindings.length > 0
+        ? 'The workflow artifact contains the full findings.'
+        : 'Findings are in the workflow artifact. No pull request was involved, so nothing was posted.',
     ]
     if (refusedDispatch) lines.unshift('Refused by the MegaLens gateway (check token, quota, or spend cap).')
+    if (isPush && dFindings.length > 0) {
+      let files = []
+      if (inputs.githubToken) {
+        try {
+          files = await createApi(inputs.githubToken).listPushFiles(owner, repo, baseSha, headSha)
+        } catch {
+          // The summary can still list the findings with the static template.
+        }
+      }
+      const fixPromptPaths = changedPaths(files)
+      const sorted = sortFindings(dFindings.map(f => {
+        const file = f.file && resolveFindingPath(f.file, fixPromptPaths)
+        return file !== f.file && fixPromptPaths.has(file) ? { ...f, file } : f
+      }))
+      lines.push(formatSummaryComment({
+        headSha,
+        doc: { ...doc, status: dStatus, tier: dTier },
+        strongFindings: sorted.filter(f => isStrongFinding(f, true)),
+        normalFindings: sorted.filter(f => !isStrongFinding(f, true)),
+        extraSecrets: secretValues,
+        fixPromptPaths,
+        now: nowMs,
+      }))
+    }
     await writeSummary(lines.join('\n\n'))
     await setOutput('status', dStatus)
     if (doc.review_id) {
@@ -987,25 +1022,27 @@ export async function runAction(deps = {}) {
 
   // Every write to the shared PR comment or job summary goes through here. Right before the write, the live PR
   // head is re-read: if a newer commit exists, this run writes nothing (one log line).
-  const upsertPrComment = async (body, marker) => {
+  const upsertPrComment = async (format, marker) => {
     const existingId = await api.findSummaryComment(owner, repo, pullNumber, marker)
+    let live = null
     if (typeof api.getPull === 'function') {
-      const live = await api.getPull(owner, repo, pullNumber)
+      live = await api.getPull(owner, repo, pullNumber)
       if (live?.headSha && live.headSha !== headSha) {
         warn(`MegaLens: PR head moved from ${headSha.slice(0, 7)} to ${live.headSha.slice(0, 7)}; nothing written for this run.`)
         return { action: 'skipped_stale' }
       }
     }
+    const body = typeof format === 'function' ? format(live) : format
     if (existingId !== null) {
       await api.updateIssueComment(owner, repo, existingId, body)
-      return { action: 'updated', commentId: existingId }
+      return { action: 'updated', commentId: existingId, body }
     }
     const createdId = await api.createIssueComment(owner, repo, pullNumber, body)
-    return { action: 'created', commentId: createdId }
+    return { action: 'created', commentId: createdId, body }
   }
-  const publishShared = async (body, tierForMarker, summaryText = body) => {
-    const result = await upsertPrComment(body, summaryMarker(tierForMarker))
-    if (result.action !== 'skipped_stale') await writeSummary(summaryText)
+  const publishShared = async (format, tierForMarker, summaryText) => {
+    const result = await upsertPrComment(format, summaryMarker(tierForMarker))
+    if (result.action !== 'skipped_stale') await writeSummary(summaryText ?? result.body)
     return result
   }
   const staleResult = async () => {
@@ -1066,12 +1103,11 @@ export async function runAction(deps = {}) {
   const effectiveDoc = { ...doc, status: effectiveStatus, tier: effectiveTier }
 
   // Early exit when the PR already moved: write nothing (publishShared re-checks right before every write).
-  if (typeof api.getPull === 'function') {
-    const latestPr = await api.getPull(owner, repo, pullNumber)
-    if (latestPr?.headSha && latestPr.headSha !== headSha) {
-      warn(`MegaLens: PR head moved from ${headSha.slice(0, 7)} to ${latestPr.headSha.slice(0, 7)}; nothing written for this run.`)
-      return staleResult()
-    }
+  const readPull = () => typeof api.getPull === 'function' ? api.getPull(owner, repo, pullNumber) : null
+  const latestPr = await readPull()
+  if (latestPr?.headSha && latestPr.headSha !== headSha) {
+    warn(`MegaLens: PR head moved from ${headSha.slice(0, 7)} to ${latestPr.headSha.slice(0, 7)}; nothing written for this run.`)
+    return staleResult()
   }
 
   if (isVerifiedTooLarge(doc, cliResult.exitCode, headSha)) {
@@ -1097,11 +1133,19 @@ export async function runAction(deps = {}) {
   let displayedStrongFindings = []
   let summaryFindings = []
   let pullFiles = null
+  let paths
   let inlinePostedCount = 0
   let inlineWarning = null
+  const repository = `${owner}/${repo}`.toLowerCase()
+  const promptPaths = (live) => (
+    live?.headSha === headSha && live.baseSha && live.baseSha === latestPr?.baseSha && !live.isFork
+      && live.headRepoFullName?.toLowerCase() === repository && live.baseRepoFullName?.toLowerCase() === repository
+      && TRUSTED_PR_AUTHORS.has(live.authorAssociation) ? paths : undefined
+  )
 
   if (effectiveStatus !== 'failed') {
     pullFiles = await api.listPullFiles(owner, repo, pullNumber)
+    paths = changedPaths(pullFiles)
     const { inDiff, outOfDiff } = partitionFindingsByDiff(doc.findings, pullFiles)
     const sortedInDiff = sortFindings(inDiff)
     allStrongFindings = sortedInDiff.filter((f) => isStrongFinding(f, true))
@@ -1135,11 +1179,14 @@ export async function runAction(deps = {}) {
         summaryFindings = sortFindings([...summaryFindings, ...appOverlapFindings])
       }
       if (toPost.length > 0) {
+        const live = await readPull()
+        if (live?.headSha && live.headSha !== headSha) return staleResult()
+        const fixPromptPaths = promptPaths(live)
         const reviewComments = toPost.map((f) => ({
           path: f.file,
           line: f.line_start,
           side: 'RIGHT',
-          body: formatInlineComment(f, secretValues),
+          body: formatInlineComment(f, secretValues, fixPromptPaths),
         }))
         try {
           await api.createPullReview(owner, repo, pullNumber, headSha, reviewComments)
@@ -1158,7 +1205,7 @@ export async function runAction(deps = {}) {
       ? safeText(cliResult.errorMessage || doc.error || '')
       : null
 
-  const summary = formatSummaryComment({
+  const summary = (live) => formatSummaryComment({
     headSha,
     doc: effectiveDoc,
     strongFindings: effectiveStatus === 'failed' ? [] : displayedStrongFindings,
@@ -1169,6 +1216,7 @@ export async function runAction(deps = {}) {
     errorMessage: summaryErrorMessage,
     now: nowMs,
     extraSecrets: secretValues,
+    fixPromptPaths: promptPaths(live),
   })
   if (pullFiles !== null) {
     const walkthrough = formatWalkthroughComment({

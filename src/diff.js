@@ -41,6 +41,7 @@ export function normalizePath(raw) {
  */
 export function resolveFindingPath(raw, known) {
   const set = known instanceof Set ? known : new Set(known)
+  if (set.has(raw)) return raw
   const plain = raw.trim().replace(/\\/g, '/').replace(/^\.\//, '')
   return set.has(plain) ? plain : normalizePath(raw)
 }
@@ -73,7 +74,6 @@ export function buildDiffHunkMap(pullFiles) {
  */
 export function partitionFindingsByDiff(findings, pullFiles) {
   const diffMap = buildDiffHunkMap(pullFiles)
-  const knownDiffFiles = new Set(diffMap.keys())
   const allPullFiles = new Set(
     pullFiles
       .filter((f) => f && typeof f.filename === 'string')
@@ -88,10 +88,7 @@ export function partitionFindingsByDiff(findings, pullFiles) {
       outOfDiff.push(finding)
       continue
     }
-    const resolvedFile = resolveFindingPath(
-      finding.file,
-      knownDiffFiles.size > 0 ? knownDiffFiles : allPullFiles,
-    )
+    const resolvedFile = resolveFindingPath(finding.file, allPullFiles)
     const normalizedFinding = resolvedFile === finding.file ? finding : { ...finding, file: resolvedFile }
     const line = finding.line_start
     if (typeof line !== 'number' || !Number.isInteger(line) || line <= 0) {

@@ -138,6 +138,7 @@ export function createGitHubApi(token, opts = {}) {
         baseSha: data.base.sha,
         headRepoFullName: data.head?.repo?.full_name ?? null,
         baseRepoFullName: data.base?.repo?.full_name ?? null,
+        authorAssociation: data.author_association ?? null,
         isFork: Boolean(data.head?.repo?.fork) || (
           Boolean(data.base?.repo?.full_name) && data.head?.repo?.full_name !== data.base?.repo?.full_name
         ),
@@ -155,6 +156,14 @@ export function createGitHubApi(token, opts = {}) {
         if (batch.length < 100) break
       }
       return files
+    },
+
+    async listPushFiles(owner, repo, baseSha, headSha) {
+      const res = await call('GET', `${repoPath(owner, repo)}/compare/${baseSha}...${headSha}?per_page=1`)
+      if (!res.ok) return fail(res, 'compare push commits')
+      const data = await res.json()
+      // Only a linear range gives the reviewed before..after files.
+      return data?.status === 'ahead' && Array.isArray(data.files) ? data.files : []
     },
 
     async getCollaboratorPermission(owner, repo, login) {

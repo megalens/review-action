@@ -21,6 +21,7 @@ export const MAX_STRING_LENGTHS = Object.freeze({
   title: 500,
   claim: 10_000,
   failure_scenario: 10_000,
+  expected_behavior: 10_000,
   evidence_quote: 4000,
   found_by_item: 128,
   review_id: 128,
@@ -81,6 +82,7 @@ const ALLOWED_FINDING_KEYS = new Set([
   'title',
   'claim',
   'failure_scenario',
+  'expected_behavior',
   'priority',
   'strength',
   'found_by',
@@ -147,6 +149,11 @@ function validateFinding(f, index, labelPrefix = 'findings') {
     MAX_STRING_LENGTHS.failure_scenario,
     `${label}.failure_scenario`,
   )
+  const expectedRaw = assertBoundedString(
+    f.expected_behavior,
+    MAX_STRING_LENGTHS.expected_behavior,
+    `${label}.expected_behavior`,
+  )
   const evidenceRaw = assertBoundedString(
     f.evidence_quote,
     MAX_STRING_LENGTHS.evidence_quote,
@@ -197,6 +204,7 @@ function validateFinding(f, index, labelPrefix = 'findings') {
     title: titleRaw.trim(),
     claim: claimRaw ? claimRaw.trim() : '',
     failure_scenario: scenarioRaw ? scenarioRaw.trim() : '',
+    ...(expectedRaw ? { expected_behavior: expectedRaw.trim() } : {}),
     priority: f.priority.toUpperCase(),
     strength: f.strength,
     found_by: foundBy,
