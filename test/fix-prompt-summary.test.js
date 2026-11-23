@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { runAction, selectNewInlineFindings } from '../src/action.js'
+import { buildCliInvocation, runEngineCli } from '../src/engine.js'
 import {
   formatInlineComment,
   formatSummaryComment,
@@ -572,4 +573,69 @@ test('entity-escapes Markdown delimiters inside HTML code tags so filenames like
   })
   assert.ok(clippedWalkthrough.includes(`<code>${longPrefix}…</code>`))
   assert.doesNotMatch(clippedWalkthrough, /&(?:#\d*|[a-z]*)…/)
+})
+
+test('Action runtime and shipping files never invoke or advertise megalens-review init or broken external pins', async () => {
+  const root = new URL('../', import.meta.url)
+  const srcFiles = (await readdir(new URL('./src/', root)))
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => `src/${f}`)
+  const distFiles = (await readdir(new URL('./dist/', root)))
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => `dist/${f}`)
+  const shippingFiles = ['README.md', 'CHANGELOG.md', 'action.yml', ...srcFiles, ...distFiles]
+
+  for (const rel of shippingFiles) {
+    const content = await readFile(new URL(rel, root), 'utf8')
+    assert.doesNotMatch(content, /megalens-review\s+init/i, `${rel} must not reference megalens-review init`)
+    assert.equal(content.includes('ea165f8d65b6e75b540449e92b4886c43607fa02'), false, `${rel} must not contain broken upload-artifact SHA`)
+    assert.equal(content.includes('950eb5f1eeff21008fcf585587b88fc83546cdcf'), false, `${rel} must not contain stale v1.2.0 Action SHA`)
+    assert.equal(content.includes('megalens.ai/docs/github-action'), false, `${rel} must not link to unpatched external docs`)
+  }
+
+  const cli = buildCliInvocation({
+    tier: 'standard',
+    baseSha: 'a'.repeat(40),
+    headSha: 'b'.repeat(40),
+    outPath: '/tmp/findings.json',
+    timeoutMinutes: 25,
+    cliBin: '/tmp/megalens-review',
+  })
+  assert.equal(cli.args[0], 'run')
+  assert.equal(cli.args.includes('init'), false)
+
+  const invoked = []
+  await runEngineCli(
+    {
+      tier: 'standard',
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      outPath: '/tmp/findings.json',
+      timeoutMinutes: 25,
+      cliBin: '/tmp/megalens-review',
+      installCodex: true,
+      authMode: 'review-key',
+      authEnv: { MEGALENS_REVIEW_ID: 'rv_1', MEGALENS_REVIEW_KEY: 'rk_test_key_placeholder' },
+      repoPath: '/tmp',
+      runnerTemp: '/tmp',
+    },
+    {
+      execFileImpl: async (command, args) => {
+        invoked.push({ command, subcommand: args[0] })
+        return { exitCode: 0, stdout: '', stderr: '', errorMessage: null }
+      },
+      readFileImpl: async () => '{}',
+      rmImpl: async () => {},
+      statImpl: async () => {
+        const err = new Error('ENOENT')
+        err.code = 'ENOENT'
+        throw err
+      },
+      baseEnv: { PATH: process.env.PATH || '/usr/bin' },
+    },
+  )
+  assert.deepEqual(
+    invoked.map((c) => c.subcommand),
+    ['install', 'run'],
+  )
 })

@@ -55,3 +55,42 @@ Addressed all 4 findings from `/root/review-input/rv-action-130/FIRST.md`:
 - `node scripts/render-dry-run.mjs`: succeeded with no unexpected changes.
 - `diff -u` of `src/{findings,diff,redact}.js` against `/root/review-input/ws-fixprompt-real/src/lib/github-setup/action-shared/{findings,diff,redact}.js`: **0 diff** (byte-for-byte parity preserved).
 - Local `micromark` + GFM render check on `formatWalkthroughComment` and `formatSummaryComment`: confirmed literal `<code>src/pkg/__init__.py</code>`, `<code>src/pkg/__init__.py</code>:8`, `<code>src/pkg/__init__.py:8</code>`, `<code>src/__tests__/a*b*c.ts:12</code>`, and `<code>src/~~old~~.ts</code>` with zero `<strong>init</strong>`.
+
+## Fix round 2
+
+Reviewed `/root/review-input/rv-action-130/FIRST.md` and `/root/review-input/rv-action-130/LOOP-CONFIRM1.md` in time order. All three in-repo findings from `FIRST.md` (#2 formatter redaction, #3 same-repo PRs in forked repositories, #4 GFM `<code>` filename escaping) are confirmed closed, and `LOOP-CONFIRM1.md` reports `NEW critical/high: none`.
+
+The single remaining open item in `LOOP-CONFIRM1.md` is **`FIRST.md #1` (High)** — `npx megalens-review init` in the published `megalens-review@0.1.5` npm package and the live `https://megalens.ai/docs/github-action` setup guide.
+
+### Unreachable / out-of-repo evidence (`file:line`)
+
+This finding is **not reachable from or fixable within `/root/review-input/ws-action-130` (`megalens/review-action`)**, which is a separate repository and is strictly scoped to edits inside this workspace:
+
+1. **Action runtime never invokes `megalens-review init`:**
+   - `src/engine.js:19,27` pins `megalens-review@0.1.5` (`dist.integrity` verified) solely for the `megalens-review` engine runtime.
+   - `src/engine.js:341-356` invokes `<bin> install` (to install pinned `codex-cli`) and `src/engine.js:144-164,358-385` invokes `<bin> run --tier ... --target range --base ... --head ... --out ... --timeout-min ...`.
+   - No file in `src/`, `dist/`, or `action.yml` invokes `init` or loads `setup-workflow.mjs`, so the broken workflow generator in `megalens-review@0.1.5` is unreachable when customers run this Action.
+2. **This repository's workflows and docs already use the valid SHA and do not advertise `init`:**
+   - `README.md:90` and `README.md:191` already pin the valid commit SHA `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2` (`f`, not `c`).
+   - `README.md:73,173` (`actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683`) and `README.md:105,206` (`actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093`) are valid 40-hex commit SHAs.
+   - `README.md:235` and `CHANGELOG.md:8` do not advertise `npx megalens-review init` and do not link to `https://megalens.ai/docs/github-action`.
+   - No shipping file in this repo (`README.md`, `CHANGELOG.md`, `action.yml`, `src/*.js`, `dist/*.js`) contains the invalid `...c43607fa02` upload-artifact SHA or the stale `v1.2.0` Action SHA `950eb5f1eeff21008fcf585587b88fc83546cdcf`.
+3. **Exact location of the still-open defect (external to this repository):**
+   - Published npm package `megalens-review@0.1.5` (`https://registry.npmjs.org/megalens-review/0.1.5`, still `latest`): `package/src/setup-workflow.mjs` emits `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886c43607fa02` and `REVIEW_ACTION_SHA = '950eb5f1eeff21008fcf585587b88fc83546cdcf'` (`v1.2.0`).
+   - Separate website + engine repository (read-only verification):
+     - `packages/engine-v2/src/setup-workflow.mjs:20-21` (`REVIEW_ACTION_SHA` = `950eb5f...`, `# v1.2.0`) and `packages/engine-v2/src/setup-workflow.mjs:97` (`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886c43607fa02`).
+     - `src/lib/review-action.ts:2,5` (`REVIEW_ACTION_SHA` = `950eb5f...`, `# v1.2.0`).
+     - `src/app/docs/github-action/content.tsx:87,185` (`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886c43607fa02`, deployed at `https://megalens.ai/docs/github-action`).
+     - `test/device-setup-review.test.ts:965-970` (compares generator output against `PULL_REQUEST_WORKFLOW`, which shares the typo).
+   - **Required release coordination outside this workspace:** tag `megalens/review-action` `v1.3.0` to obtain the release commit SHA, then in the separate website/engine repo fix `...c43607fa02` -> `...f43607fa02`, update `REVIEW_ACTION_SHA` to the `v1.3.0` commit SHA, add a `uses:` SHA validation assertion in `test/device-setup-review.test.ts`, deploy `megalens.ai/docs/github-action`, and publish `megalens-review@0.1.6` to npm.
+
+### Regression guard added in this repo
+
+- Added a regression test (`test/fix-prompt-summary.test.js:578-641`) verifying that:
+  - No shipping file (`README.md`, `CHANGELOG.md`, `action.yml`, `src/*.js`, `dist/*.js`) references `megalens-review init`, the broken `...c43607fa02` upload-artifact SHA, the stale `v1.2.0` Action SHA `950eb5f1eeff21008fcf585587b88fc83546cdcf`, or `megalens.ai/docs/github-action`.
+  - `buildCliInvocation` and `runEngineCli` (`src/engine.js`) only invoke the `megalens-review` binary with subcommands `install` and `run` (never `init`).
+
+### Verification
+
+- `npm test`: **176/176 passed** (23 suites, 0 failures, 0 skipped).
+- `node --check src/*.js dist/*.js scripts/*.mjs` and `git diff --check`: passed.
