@@ -94,3 +94,37 @@ This finding is **not reachable from or fixable within `/root/review-input/ws-ac
 
 - `npm test`: **176/176 passed** (23 suites, 0 failures, 0 skipped).
 - `node --check src/*.js dist/*.js scripts/*.mjs` and `git diff --check`: passed.
+
+## Fix round 3
+
+Reviewed `/root/review-input/rv-action-130/FIRST.md`, `/root/review-input/rv-action-130/LOOP-CONFIRM1.md`, and `/root/review-input/rv-action-130/LOOP-CONFIRM2.md` in time order. Preserved all earlier fixes (#2 formatter redaction, #3 same-repo PRs in forked repositories, #4 GFM `<code>` filename escaping, and #1 in-repo runtime/shipping guards).
+
+### 1. New High (`LOOP-CONFIRM2.md`) — Both README workflows fail when copied as directed
+
+**Fixed (`README.md:17`, `README.md:31`, `README.md:57,80,112`, `README.md:127`, `README.md:159,183,215`, `README.md:239-248`, `test/fix-prompt-summary.test.js:647-730`).**
+
+- **Root cause:** Fix round 1 rewrote `README.md:235` to tell customers to `"Copy one of the pinned three-job workflows above into .github/workflows/ and set your MEGALENS_TOKEN repository secret."` That falsely described the `megalens/review-action@0000000000000000000000000000000000000000` placeholder as already pinned and omitted the required step to substitute the release commit SHA before committing the workflow.
+- **Why the templates use a clearly marked 40-hex placeholder rather than a hardcoded SHA or mutable tag:**
+  - A release commit `C` tagged `v1.3.0` cannot contain `SHA-1(C)` in its own `README.md` (SHA-1 preimage resistance).
+  - Pinning the prior `v1.2.0` SHA (`950eb5f1eeff21008fcf585587b88fc83546cdcf`) would install v1.2.0 (`megalens-review@0.1.3`) instead of v1.3.0; pinning an unpushed branch commit SHA would 404 on GitHub and break if squashed/rebased.
+  - Replacing 40-hex commit-SHA pins with a mutable tag (`@v1` / `@v1.3.0`) would weaken the repository's supply-chain SHA-pinning policy (`README.md:17`, `test/review1-regression.test.js:858-862`).
+- **Fix applied:**
+  - Removed the false `"pinned three-job workflows"` copy-as-is direction and replaced it with a numbered `### Manual setup` section (`README.md:239-248`) that:
+    1. Shows how to look up the 40-character release commit SHA on GitHub Releases (`https://github.com/megalens/review-action/releases`) or resolve it from Git for both annotated and lightweight tags (`git ls-remote --tags https://github.com/megalens/review-action.git v1.3.0 'v1.3.0^{}' | tail -n 1 | awk '{print $1}'`).
+    2. Explicitly directs replacing all three `megalens/review-action@0000000000000000000000000000000000000000` placeholders (`create`, `review`, `publish`) before adding `MEGALENS_TOKEN`, warning that leaving the all-zero placeholder fails on the `create` step.
+  - Added prominent `> **Required before copying:**` notices immediately before both YAML templates (`README.md:31`, `README.md:127`) and relabeled all 6 `uses: megalens/review-action@0000000000000000000000000000000000000000` lines (`README.md:57,80,112,159,183,215`) with `# PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)`.
+- **Regression test (`test/fix-prompt-summary.test.js:647-730`):**
+  - Verifies `README.md` never calls the placeholder templates already pinned, warns before both YAML blocks, labels all 6 `megalens/review-action` placeholder lines, documents the full manual setup steps, leaves zero all-zero SHAs after substituting a release commit SHA across all 12 `uses:` entries, and verifies via a scratch git repo that the documented `git ls-remote --tags` command resolves both annotated (`v1.3.0`) and lightweight (`v1`) tags to the exact commit SHA.
+
+### 2. Earlier High (`FIRST.md #1` in `LOOP-CONFIRM2.md`) — Published `megalens-review@0.1.5` installer & live `megalens.ai/docs/github-action`
+
+**Out of scope / unreachable from `/root/review-input/ws-action-130` (unchanged from Fix round 2, verified with `file:line` evidence):**
+
+- This Action runtime pins `megalens-review@0.1.5` (`src/engine.js:19,27`) and only invokes `install` (`src/engine.js:341-356`) and `run` (`src/engine.js:144-164,358-385`) — it never invokes `init` or loads `setup-workflow.mjs` (enforced by `test/fix-prompt-summary.test.js:582-645`).
+- No shipping file in this repo (`README.md`, `CHANGELOG.md`, `action.yml`, `src/*.js`, `dist/*.js`) advertises `megalens-review init`, links to `megalens.ai/docs/github-action`, or contains the invalid `...c43607fa02` upload-artifact SHA or stale `v1.2.0` Action SHA (`README.md:92,195` already pin the valid `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2`).
+- Closing `FIRST.md #1` end-to-end requires edits and publication outside `/root/review-input/ws-action-130` (website/engine repo: `packages/engine-v2/src/setup-workflow.mjs:20-21,97`, `src/lib/review-action.ts:2,5`, `src/app/docs/github-action/content.tsx:87,185`, `test/device-setup-review.test.ts:965-970`; publish `megalens-review@0.1.6` to npm and redeploy `https://megalens.ai/docs/github-action` after `v1.3.0` is tagged).
+
+### Verification
+
+- `npm test`: **177/177 passed** (23 suites, 0 failures, 0 skipped).
+- `node --check src/*.js dist/*.js scripts/*.mjs` and `git diff --check`: passed.

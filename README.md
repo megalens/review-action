@@ -14,7 +14,7 @@ Runs the `megalens-review` engine CLI (`ENGINE-V2-CONTRACT.md`) inside an isolat
   - `contents: read` — read repository files for review / PR metadata.
   - `pull-requests: write` — post the PR review for `strong` P0/P1 findings and create/update the PR summary comment via the PR/issue comments endpoint. **`issues: write` is not needed.**
 - **`full` mode (`mode: full`):** **same-repo trusted PRs only, not for forks.** Always use the three-job `create` -> `review` -> `publish` split for any repository that accepts fork PRs.
-- **Pin third-party actions and `megalens/review-action` by commit SHA** (replace the example placeholder SHA for `megalens/review-action` with your pinned release commit SHA).
+- **Pin third-party actions and `megalens/review-action` by commit SHA** (replace the all-zero placeholder SHA `0000000000000000000000000000000000000000` for `megalens/review-action` in every job with the 40-character release commit SHA).
 - **Self-hosted runners:** **Do not use self-hosted runners on public repositories for fork PRs.** A fork PR or compromised checkout on a persistent runner can expose cached credentials or host state. The Action emits a warning when `RUNNER_ENVIRONMENT == self-hosted` on a fork PR.
 
 ## What Leaves the Runner
@@ -27,6 +27,8 @@ The Action runs on the customer's runner. The whole repo is not uploaded. Code e
 ## Usage: Standard Tier (`pull_request`)
 
 Launch tiers are **Standard** and **Deep** only (`double` is not available yet and is refused with `The Double tier is not available yet; use standard or deep.`). Use `standard` (default) on `pull_request` events (`deep` is refused on `pull_request` and downgraded to `standard` with a warning):
+
+> **Required before copying:** The third-party actions below are pinned to real commit SHAs, but `megalens/review-action@0000000000000000000000000000000000000000` is an intentionally invalid placeholder (a release commit cannot contain its own SHA-1). Replace all three `0000000000000000000000000000000000000000` placeholders (`create`, `review`, `publish`) with the 40-character commit SHA of the `megalens/review-action` release you are installing (see [Manual setup](#manual-setup) below).
 
 ```yaml
 name: MegaLens Review
@@ -52,7 +54,7 @@ jobs:
       base_sha: ${{ steps.create.outputs.base_sha }}
     steps:
       - id: create
-        uses: megalens/review-action@0000000000000000000000000000000000000000 # v1 (pin to release SHA)
+        uses: megalens/review-action@0000000000000000000000000000000000000000 # PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)
         with:
           mode: create
           tier: standard
@@ -75,7 +77,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: megalens/review-action@0000000000000000000000000000000000000000 # v1 (pin to release SHA)
+      - uses: megalens/review-action@0000000000000000000000000000000000000000 # PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)
         env:
           MEGALENS_REVIEW_ID: ${{ needs.create.outputs.review_id }}
           MEGALENS_REVIEW_KEY: ${{ needs.create.outputs.review_key }}
@@ -107,7 +109,7 @@ jobs:
           name: megalens-findings
           path: ${{ runner.temp }}
 
-      - uses: megalens/review-action@0000000000000000000000000000000000000000 # v1 (pin to release SHA)
+      - uses: megalens/review-action@0000000000000000000000000000000000000000 # PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)
         with:
           mode: publish
           tier: standard
@@ -121,6 +123,8 @@ jobs:
 ## Usage: Comment-Triggered Review (`issue_comment`)
 
 Run `deep` (`/megalens deep`) or `standard` (`/megalens review`) when a maintainer with `write`, `maintain`, or `admin` repository access comments on a pull request (including fork PRs after maintainer inspection). `create` pins `head_sha` and `base_sha` at trigger time so `review` checks out the exact inspected commit and `publish` detects if the PR moved:
+
+> **Required before copying:** Replace all three `0000000000000000000000000000000000000000` placeholders (`create`, `review`, `publish`) below with the 40-character commit SHA of the `megalens/review-action` release you are installing (see [Manual setup](#manual-setup) below).
 
 ```yaml
 name: MegaLens Comment Review
@@ -152,7 +156,7 @@ jobs:
       base_sha: ${{ steps.create.outputs.base_sha }}
     steps:
       - id: create
-        uses: megalens/review-action@0000000000000000000000000000000000000000 # v1 (pin to release SHA)
+        uses: megalens/review-action@0000000000000000000000000000000000000000 # PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)
         with:
           mode: create
           tier: standard
@@ -176,7 +180,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: megalens/review-action@0000000000000000000000000000000000000000 # v1 (pin to release SHA)
+      - uses: megalens/review-action@0000000000000000000000000000000000000000 # PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)
         env:
           MEGALENS_REVIEW_ID: ${{ needs.create.outputs.review_id }}
           MEGALENS_REVIEW_KEY: ${{ needs.create.outputs.review_key }}
@@ -208,7 +212,7 @@ jobs:
           name: megalens-findings
           path: ${{ runner.temp }}
 
-      - uses: megalens/review-action@0000000000000000000000000000000000000000 # v1 (pin to release SHA)
+      - uses: megalens/review-action@0000000000000000000000000000000000000000 # PLACEHOLDER: replace with release commit SHA (e.g. v1.3.0)
         with:
           mode: publish
           tier: standard
@@ -232,7 +236,16 @@ Open **Copy fix prompt** under a finding to copy a ready-to-paste prompt for you
 
 After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same comment author across runs so `publish` updates the existing comment in place.
 
-Copy one of the pinned three-job workflows above into `.github/workflows/` and set your `MEGALENS_TOKEN` repository secret. See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.0`).
+### Manual setup
+
+1. Look up the 40-character commit SHA for the `megalens/review-action` release you want to install on the [GitHub Releases](https://github.com/megalens/review-action/releases) page (target: `v1.3.0`), or resolve it from Git once the release tag is published:
+   ```bash
+   git ls-remote --tags https://github.com/megalens/review-action.git v1.3.0 'v1.3.0^{}' | tail -n 1 | awk '{print $1}'
+   ```
+2. Copy one of the three-job workflow templates above into `.github/workflows/` and replace every `megalens/review-action@0000000000000000000000000000000000000000` placeholder (all three jobs: `create`, `review`, and `publish`) with that 40-character release commit SHA. Leaving the all-zero placeholder in place will fail when GitHub Actions tries to resolve the `create` step.
+3. Add your `MEGALENS_TOKEN` repository secret under **Settings -> Secrets and variables -> Actions**.
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.0`).
 
 Both workflows use the same concurrency group for a given PR. GitHub Actions shares concurrency groups across workflow files in the same repository. With `cancel-in-progress: true`, a new run can cancel a running review for the same PR from either workflow. [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-only-cancel-in-progress-jobs-or-runs-for-the-current-workflow)
 
