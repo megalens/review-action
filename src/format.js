@@ -129,7 +129,8 @@ export function parseInlineMarker(body) {
  */
 export function clip(text, max) {
   if (text.length <= max) return text
-  const head = text.slice(0, max)
+  // Keep the length budget without retaining half of a supplementary character.
+  const head = text.slice(0, max).replace(/[\uD800-\uDBFF]$/u, '')
   const sentence = Math.max(head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '))
   if (sentence >= max / 2) return head.slice(0, sentence + 1)
   const space = head.lastIndexOf(' ')
@@ -182,7 +183,7 @@ function sentenceEnd(text) {
 // Without a verified changed-file path, keep the copyable block independent of the finding.
 const FIX_PROMPT = [
   '<details>',
-  '<summary>Fix prompt</summary>',
+  '<summary>Copy fix prompt</summary>',
   '',
   'Check the finding in the code and fill in the template in your own words before sending it to a coding tool.',
   '',
@@ -198,7 +199,7 @@ const FIX_PROMPT = [
 ].join('\n')
 
 const REVIEW_MARKER = /\/?\bmegalens\s*[:-]\s*(?:review|app|meta|walkthrough)(?:\s*[:-]\s*[a-z0-9_-]+)*/gi
-const OVERRIDE_REQUEST = /\b(?:ignore|disregard|override|forget)\s+(?:(?:all|any|the|your|previous|prior|earlier|above|system|developer)\s+)*(?:instructions|prompts|rules)\b/gi
+const OVERRIDE_REQUEST = /\b(?:ignore|disregard|override|forget)\s+(?:(?:all|any|the|your|previous|prior|earlier|above|system|developer)\s+)*(?:instructions?|prompts?|rules?)\b/gi
 
 function cleanPromptText(value, max, extraSecrets) {
   const clean = redactSecrets(String(value ?? ''), extraSecrets)
@@ -211,7 +212,7 @@ function cleanPromptText(value, max, extraSecrets) {
     .replace(/ +/g, ' ')
     .replace(OVERRIDE_REQUEST, '[removed]')
     .trim()
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // Fenced code preserves literal angle brackets and ampersands.
   return clip(redactSecrets(clean, extraSecrets), max - 1)
 }
 

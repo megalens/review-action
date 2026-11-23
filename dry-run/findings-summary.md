@@ -14,7 +14,7 @@ Tier: `standard` · Review: `rv_fixture00000000000001`
 - **P1** <code>src/a.ts:1</code>: Null deref in a. Missing null check before dereferencing value. Empty input throws TypeError.
 
   <details>
-  <summary>Fix prompt</summary>
+  <summary>Copy fix prompt</summary>
 
   Check the finding in the code and fill in the template in your own words before sending it to a coding tool.
 

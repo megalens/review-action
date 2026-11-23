@@ -235,12 +235,14 @@ export function selectNewInlineFindings(strongFindings, existingComments, opts =
 
     const parsed = parseInlineMarker(comment?.body)
     if (parsed) {
-      const rangeKey = `${parsed.file}\0${parsed.lineStart}-${parsed.lineEnd}\0${parsed.titleSha}`
+      // GitHub still supplies the actual path when the displayed marker had to redact it.
+      const file = parsed.file.includes('[redacted]') && comment.path ? comment.path : parsed.file
+      const rangeKey = `${file}\0${parsed.lineStart}-${parsed.lineEnd}\0${parsed.titleSha}`
       if (isOwn) ownKeys.add(rangeKey)
       if (isApp) {
         appKeys.add(rangeKey)
-        appKeys.add(`${parsed.file}\0${parsed.lineStart}\0${parsed.titleSha}`)
-        appRanges.push({ file: parsed.file, start: parsed.lineStart, end: parsed.lineEnd })
+        appKeys.add(`${file}\0${parsed.lineStart}\0${parsed.titleSha}`)
+        appRanges.push({ file, start: parsed.lineStart, end: parsed.lineEnd })
       }
       continue
     }

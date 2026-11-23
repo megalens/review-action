@@ -127,7 +127,7 @@ describe('strong vs normal routing and fail-on', () => {
     const summary = createdComments.find((body) => body.startsWith(SUMMARY_MARKER))
     assert.match(summary, /\*\*Strong findings \(1\)/)
     assert.equal(summary.match(/^<details>$/gm).length, 1, 'one group for all summary findings')
-    assert.equal(summary.match(/<summary>Fix prompt<\/summary>/g).length, 3, 'one prompt per finding')
+    assert.equal(summary.match(/<summary>Copy fix prompt<\/summary>/g).length, 3, 'one prompt per finding')
     assert.match(summary, /2 summary findings/)
     assert.match(summary, /Missing validation on baz\(\)/)
     assert.match(summary, /Return flag unused/)
