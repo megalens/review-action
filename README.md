@@ -240,7 +240,7 @@ After a complete or partial review, MegaLens updates one walkthrough comment per
    ```bash
    git ls-remote --tags https://github.com/megalens/review-action.git v1.3.0 'v1.3.0^{}' | tail -n 1 | awk '{print $1}'
    ```
-2. Copy one of the three-job workflow templates above into `.github/workflows/` and replace every `megalens/review-action@0000000000000000000000000000000000000000` placeholder (all three jobs: `create`, `review`, and `publish`) with that 40-character release commit SHA. Leaving the all-zero placeholder in place will fail when GitHub Actions tries to resolve the `create` step.
+2. Copy one of the three-job workflow templates above into `.github/workflows/`. They already pin `megalens/review-action` to the v1.3.0 commit in all three jobs (`create`, `review`, `publish`).
 3. Add your `MEGALENS_TOKEN` repository secret under **Settings -> Secrets and variables -> Actions**.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.0`).
