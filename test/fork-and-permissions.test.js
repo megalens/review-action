@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { FORK_SKIP_SUMMARY, runAction } from '../src/action.js'
+import { FORK_SKIP_SUMMARY, isForkPullRequest, runAction } from '../src/action.js'
 import { parseCommentCommand } from '../src/commands.js'
-import { WALKTHROUGH_MARKER } from '../src/format.js'
+import { summaryMarker, WALKTHROUGH_MARKER } from '../src/format.js'
 import { createGitHubApi } from '../src/github-api.js'
 
 const PATCH = '@@ -1,2 +1,3 @@\n const a = 1\n+const b = 2\n'
@@ -188,5 +188,282 @@ describe('commenter permission check and /megalens commands', () => {
     assert.equal(res.reason, 'unauthorized_commenter')
     assert.equal(engineCalled, false)
     assert.match(summaries[0], /does not have write or admin permission/)
+  })
+})
+
+describe('same-repository PRs inside a forked repository vs cross-repository fork PRs', () => {
+  const baseSha = 'a'.repeat(40)
+  const headSha = 'b'.repeat(40)
+  const copyBlocks = (body) => [...body.matchAll(/^( *)```\n([\s\S]*?)\n\1```$/gm)]
+    .map(([, , contents]) => contents.replace(/^ {2}/gm, ''))
+  const findingsRaw = JSON.stringify({
+    schema: 'megalens.findings/v1',
+    review_id: 'rv_fork_self_1',
+    tier: 'standard',
+    status: 'complete',
+    target: { kind: 'range', base: baseSha, head: headSha },
+    passes: [{ name: 'codex-standard', status: 'ok' }],
+    findings: [
+      {
+        id: 'f1',
+        file: 'src/x.js',
+        line_start: 2,
+        line_end: 2,
+        title: 'Unused guard',
+        claim: 'Guard skips validation on empty input',
+        failure_scenario: 'Calling with empty input bypasses the check',
+        expected_behavior: 'Reject empty input before returning',
+        priority: 'P1',
+        strength: 'strong',
+      },
+    ],
+  })
+
+  it('isForkPullRequest distinguishes same-repo PRs inside a fork from cross-repo and deleted-head PRs', () => {
+    assert.equal(
+      isForkPullRequest({
+        base: { repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+        head: { repo: { id: 777, full_name: 'Alice/My-Fork', fork: true } },
+      }),
+      false,
+    )
+    assert.equal(
+      isForkPullRequest({
+        base: { repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+        head: { repo: { id: 888, full_name: 'stranger/my-fork', fork: true } },
+      }),
+      true,
+    )
+    assert.equal(
+      isForkPullRequest({
+        base: { repo: { id: 777, full_name: 'alice/my-fork', fork: false } },
+        head: { repo: { id: 888, full_name: 'other/my-fork', fork: false } },
+      }),
+      true,
+    )
+    assert.equal(
+      isForkPullRequest({
+        base: { repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+        head: { repo: null },
+      }),
+      true,
+    )
+    assert.equal(
+      isForkPullRequest({
+        base: { repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+        head: {},
+      }),
+      true,
+    )
+  })
+
+  it('pull_request create and publish run normally for same-repo PRs in a forked repo and still skip cross-repo or deleted-head PRs', async () => {
+    let createdArgs = null
+    const sameRepoForkPayload = {
+      action: 'opened',
+      repository: { owner: { login: 'alice' }, name: 'my-fork', full_name: 'alice/my-fork', fork: true },
+      pull_request: {
+        number: 12,
+        state: 'open',
+        base: { sha: baseSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+        head: { sha: headSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+      },
+    }
+
+    const createRes = await runAction({
+      env: {
+        GITHUB_EVENT_NAME: 'pull_request',
+        GITHUB_REPOSITORY: 'alice/my-fork',
+        INPUT_MODE: 'create',
+        'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_1234',
+      },
+      payload: sameRepoForkPayload,
+      createReview: async (opts) => {
+        createdArgs = opts
+        return { reviewId: 'rv_fork_self_1', reviewKey: 'ml_rk_fixture_1234' }
+      },
+    })
+    assert.equal(createRes.status, 'complete')
+    assert.equal(createdArgs.repo, 'alice/my-fork')
+
+    // Cross-repo PR and deleted head repo still skip cleanly on pull_request.
+    for (const badHeadRepo of [
+      { id: 888, full_name: 'stranger/my-fork', fork: true },
+      null,
+    ]) {
+      let called = false
+      const skipRes = await runAction({
+        env: {
+          GITHUB_EVENT_NAME: 'pull_request',
+          GITHUB_REPOSITORY: 'alice/my-fork',
+          INPUT_MODE: 'create',
+          'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_1234',
+        },
+        payload: {
+          ...sameRepoForkPayload,
+          pull_request: {
+            ...sameRepoForkPayload.pull_request,
+            head: { sha: headSha, repo: badHeadRepo },
+          },
+        },
+        createReview: async () => {
+          called = true
+          return { reviewId: 'never', reviewKey: 'never' }
+        },
+      })
+      assert.equal(skipRes.status, 'skipped')
+      assert.equal(skipRes.reason, 'fork_pr')
+      assert.equal(called, false)
+    }
+
+    // Real GitHub adapter on pull_request publish fills both inline and summary prompts for OWNER.
+    const postedReviews = []
+    const postedComments = []
+    const fakeFetch = async (url, init) => {
+      if (url.endsWith('/user')) return Response.json({ login: 'github-actions[bot]' })
+      if (url.endsWith('/pulls/12')) {
+        return Response.json({
+          state: 'open',
+          draft: false,
+          author_association: 'OWNER',
+          base: { sha: baseSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+          head: { sha: headSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+        })
+      }
+      if (url.includes('/pulls/12/files')) return Response.json([{ filename: 'src/x.js', status: 'modified', patch: PATCH }])
+      if (url.includes('/pulls/12/comments')) return Response.json([])
+      if (url.includes('/pulls/12/reviews') && init.method === 'POST') {
+        postedReviews.push(...JSON.parse(init.body).comments)
+        return Response.json({ id: 501 }, { status: 201 })
+      }
+      if (url.includes('/issues/12/comments') && init.method === 'GET') return Response.json([])
+      if (url.includes('/issues/12/comments') && init.method === 'POST') {
+        postedComments.push(JSON.parse(init.body).body)
+        return Response.json({ id: 600 + postedComments.length }, { status: 201 })
+      }
+      throw new Error(`Unexpected fetch: ${init.method} ${url}`)
+    }
+
+    const pubRes = await runAction({
+      env: {
+        GITHUB_EVENT_NAME: 'pull_request',
+        GITHUB_REPOSITORY: 'alice/my-fork',
+        INPUT_MODE: 'publish',
+        'INPUT_GITHUB-TOKEN': 'ghs_fixture_token',
+      },
+      payload: sameRepoForkPayload,
+      createGitHubApi: (token) => createGitHubApi(token, { fetchImpl: fakeFetch }),
+      readFindingsImpl: async () => findingsRaw,
+      outPath: '/tmp/findings.json',
+    })
+    assert.equal(pubRes.status, 'complete')
+    assert.equal(postedReviews.length, 1)
+    const [inlinePrompt] = copyBlocks(postedReviews[0].body)
+    const summaryBody = postedComments.find((b) => b.startsWith(summaryMarker('standard')))
+    const [summaryPrompt] = copyBlocks(summaryBody)
+    assert.match(inlinePrompt, /^Fix this bug in "src\/x\.js" \(line 2\)\./)
+    assert.equal(summaryPrompt, inlinePrompt)
+  })
+
+  it('issue_comment with real GitHub adapter fills prompts for same-repo PRs in a forked repo and isolates cross-repo/deleted-head PRs', async () => {
+    const issueCommentPayload = {
+      action: 'created',
+      repository: { owner: { login: 'alice' }, name: 'my-fork', full_name: 'alice/my-fork', fork: true },
+      sender: { login: 'alice', type: 'User' },
+      issue: { number: 12, pull_request: {} },
+      comment: { id: 99, body: '/megalens review', user: { login: 'alice', type: 'User' } },
+    }
+
+    const runPublishWithHeadRepo = async (headRepo) => {
+      const postedReviews = []
+      const postedComments = []
+      const fakeFetch = async (url, init) => {
+        if (url.endsWith('/user')) return Response.json({ login: 'github-actions[bot]' })
+        if (url.endsWith('/pulls/12')) {
+          return Response.json({
+            state: 'open',
+            draft: false,
+            author_association: 'OWNER',
+            base: { sha: baseSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+            head: { sha: headSha, repo: headRepo },
+          })
+        }
+        if (url.includes('/pulls/12/files')) return Response.json([{ filename: 'src/x.js', status: 'modified', patch: PATCH }])
+        if (url.includes('/pulls/12/comments')) return Response.json([])
+        if (url.includes('/pulls/12/reviews') && init.method === 'POST') {
+          postedReviews.push(...JSON.parse(init.body).comments)
+          return Response.json({ id: 501 }, { status: 201 })
+        }
+        if (url.includes('/issues/12/comments') && init.method === 'GET') return Response.json([])
+        if (url.includes('/issues/12/comments') && init.method === 'POST') {
+          postedComments.push(JSON.parse(init.body).body)
+          return Response.json({ id: 600 + postedComments.length }, { status: 201 })
+        }
+        throw new Error(`Unexpected fetch: ${init.method} ${url}`)
+      }
+      const res = await runAction({
+        env: {
+          GITHUB_EVENT_NAME: 'issue_comment',
+          GITHUB_REPOSITORY: 'alice/my-fork',
+          INPUT_MODE: 'publish',
+          'INPUT_HEAD-SHA': headSha,
+          'INPUT_GITHUB-TOKEN': 'ghs_fixture_token',
+        },
+        payload: issueCommentPayload,
+        createGitHubApi: (token) => createGitHubApi(token, { fetchImpl: fakeFetch }),
+        readFindingsImpl: async () => findingsRaw,
+        outPath: '/tmp/findings.json',
+      })
+      return { res, postedReviews, postedComments }
+    }
+
+    // Same-repo PR in a forked repo -> filled prompts in both inline and summary.
+    const sameRepo = await runPublishWithHeadRepo({ id: 777, full_name: 'alice/my-fork', fork: true })
+    assert.equal(sameRepo.res.status, 'complete')
+    const [inlineFilled] = copyBlocks(sameRepo.postedReviews[0].body)
+    const [summaryFilled] = copyBlocks(sameRepo.postedComments.find((b) => b.startsWith(summaryMarker('standard'))))
+    assert.match(inlineFilled, /^Fix this bug in "src\/x\.js" \(line 2\)\./)
+    assert.equal(summaryFilled, inlineFilled)
+
+    // Cross-repo fork PR and deleted head repo -> placeholder template only, and full mode refuses.
+    for (const untrustedHeadRepo of [
+      { id: 888, full_name: 'stranger/my-fork', fork: true },
+      null,
+    ]) {
+      const crossRepo = await runPublishWithHeadRepo(untrustedHeadRepo)
+      assert.equal(crossRepo.res.status, 'complete')
+      const [inlinePlaceholder] = copyBlocks(crossRepo.postedReviews[0].body)
+      const [summaryPlaceholder] = copyBlocks(crossRepo.postedComments.find((b) => b.startsWith(summaryMarker('standard'))))
+      assert.match(inlinePlaceholder, /Check \[file and lines\]/)
+      assert.equal(summaryPlaceholder, inlinePlaceholder)
+
+      const fullRes = await runAction({
+        env: {
+          GITHUB_EVENT_NAME: 'issue_comment',
+          GITHUB_REPOSITORY: 'alice/my-fork',
+          INPUT_MODE: 'full',
+          'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_1234',
+          'INPUT_GITHUB-TOKEN': 'ghs_fixture_token',
+        },
+        payload: issueCommentPayload,
+        createGitHubApi: (token) => createGitHubApi(token, {
+          fetchImpl: async (url) => {
+            if (url.endsWith('/collaborators/alice/permission')) return Response.json({ permission: 'admin' })
+            if (url.endsWith('/pulls/12')) {
+              return Response.json({
+                state: 'open',
+                draft: false,
+                base: { sha: baseSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+                head: { sha: headSha, repo: untrustedHeadRepo },
+              })
+            }
+            throw new Error(`Unexpected fetch: ${url}`)
+          },
+        }),
+        runEngine: async () => { assert.fail('full mode must not run engine on cross-repo or deleted-head PR') },
+      })
+      assert.equal(fullRes.status, 'skipped')
+      assert.equal(fullRes.reason, 'fork_full_refused')
+    }
   })
 })

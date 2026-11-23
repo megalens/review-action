@@ -1,5 +1,39 @@
 import { redactSecrets } from './redact.js'
 
+/**
+ * Determine whether a pull request object (webhook payload or REST API response)
+ * comes from a different repository (a fork PR) rather than another branch of the base repository.
+ * Distinguishes cross-repository PRs from same-repository PRs inside a repo that is itself a fork.
+ * @param {any} pr
+ * @returns {boolean}
+ */
+export function isForkPullRequest(pr) {
+  if (!pr || typeof pr !== 'object') return false
+  if (pr.head && pr.head.repo === null) return true
+
+  const headId = typeof pr.head?.repo?.id === 'number' ? pr.head.repo.id : null
+  const baseId = typeof pr.base?.repo?.id === 'number' ? pr.base.repo.id : null
+  if (headId !== null && baseId !== null && headId !== baseId) return true
+
+  const headFull = typeof pr.head?.repo?.full_name === 'string' && pr.head.repo.full_name
+    ? pr.head.repo.full_name.toLowerCase()
+    : null
+  const baseFull = typeof pr.base?.repo?.full_name === 'string' && pr.base.repo.full_name
+    ? pr.base.repo.full_name.toLowerCase()
+    : null
+  if (headFull && baseFull && headFull !== baseFull) return true
+
+  if ((headId !== null && baseId !== null && headId === baseId) || (headFull && baseFull && headFull === baseFull)) {
+    return false
+  }
+
+  if ((baseId !== null && headId === null && !headFull) || (baseFull && !headFull && headId === null)) {
+    return true
+  }
+  if (pr.head?.repo?.fork === true) return true
+  return false
+}
+
 export class GitHubApiError extends Error {
   /**
    * @param {number} status
@@ -136,12 +170,12 @@ export function createGitHubApi(token, opts = {}) {
         draft: data.draft === true,
         headSha: data.head.sha,
         baseSha: data.base.sha,
+        headRepoId: typeof data.head?.repo?.id === 'number' ? data.head.repo.id : null,
+        baseRepoId: typeof data.base?.repo?.id === 'number' ? data.base.repo.id : null,
         headRepoFullName: data.head?.repo?.full_name ?? null,
         baseRepoFullName: data.base?.repo?.full_name ?? null,
         authorAssociation: data.author_association ?? null,
-        isFork: Boolean(data.head?.repo?.fork) || (
-          Boolean(data.base?.repo?.full_name) && data.head?.repo?.full_name !== data.base?.repo?.full_name
-        ),
+        isFork: isForkPullRequest(data),
       }
     },
 

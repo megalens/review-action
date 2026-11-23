@@ -77,6 +77,37 @@ export function titleHash(title) {
   return createHash('sha256').update(normalized).digest('hex').slice(0, 16)
 }
 
+const EXTRA_FORMAT_SECRET_PATTERNS = [
+  /\brk_[A-Za-z0-9_-]{20,}\b/g,
+  /\bAuthorization\s*:\s*Basic\s+[A-Za-z0-9+/=]{4,}/gi,
+]
+
+/** Redact `Basic <base64>` only when `<base64>` is canonical base64 decoding to printable `user:pass` (never English words). */
+const BASIC_CRED_RE = /\bBasic\s+([A-Za-z0-9+/]{3,}={0,2})(?![A-Za-z0-9+/=])/gi
+
+function isBasicCred(b64) {
+  if (b64.length < 4 || b64.length % 4 === 1) return false
+  if (b64.includes('=') && b64.length % 4 !== 0) return false
+  try {
+    const buf = Buffer.from(b64, 'base64')
+    if (buf.length < 2) return false
+    const canonical = buf.toString('base64')
+    if (b64 !== canonical && b64 !== canonical.replace(/=+$/, '')) return false
+    const decoded = buf.toString('utf8')
+    return /^[\x20-\x7e]*:[\x20-\x7e]*$/.test(decoded) && decoded.length >= 2
+  } catch {
+    return false
+  }
+}
+
+function redactReviewText(text, extraSecrets) {
+  let out = redactSecrets(text, extraSecrets)
+  for (const re of EXTRA_FORMAT_SECRET_PATTERNS) {
+    out = out.replace(re, '[redacted]')
+  }
+  return out.replace(BASIC_CRED_RE, (m, tok) => (isBasicCred(tok) ? '[redacted]' : m))
+}
+
 /**
  * Hidden marker embedded in each inline review comment using stable finding identity
  * (file + line range + sha256(title) prefix).
@@ -84,7 +115,7 @@ export function titleHash(title) {
  * @returns {string}
  */
 export function inlineMarker(finding, extraSecrets) {
-  const file = encodeURIComponent(redactSecrets(finding?.file ?? '', extraSecrets)).replace(/--/g, '%2D%2D')
+  const file = encodeURIComponent(redactReviewText(finding?.file ?? '', extraSecrets)).replace(/--/g, '%2D%2D')
   const start = Number(finding?.line_start) || 0
   const end = finding?.line_end && finding.line_end >= start ? Number(finding.line_end) : start
   const hash = titleHash(finding?.title ?? '')
@@ -146,13 +177,14 @@ export function clip(text, max) {
  * - neutralises @mentions, fenced code block breakouts, image/link embeds (![ and ](),
  *   reference-style links (][ and ]:), bare URL/www/mailto auto-linking, #N / owner/repo#N
  *   issue cross-references, and leading /commands on any line.
+ * - entity-escapes Markdown delimiters for inline HTML code tags.
  * @param {string} text
  * @param {number} max
- * @param {{ singleLine?: boolean, extraSecrets?: string[] }} [opts]
+ * @param {{ singleLine?: boolean, extraSecrets?: string[], inlineCode?: boolean }} [opts]
  * @returns {string}
  */
 export function sanitizeText(text, max, opts = {}) {
-  let safe = redactSecrets(String(text ?? ''), opts.extraSecrets).replace(/\r/g, '')
+  let safe = redactReviewText(String(text ?? ''), opts.extraSecrets).replace(/\r/g, '')
   if (opts.singleLine) {
     safe = safe.replace(/\s*\n+\s*/g, ' ').trim()
   }
@@ -161,8 +193,6 @@ export function sanitizeText(text, max, opts = {}) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/@(?=[A-Za-z0-9_-])/g, '@\u200b')
-    .replace(/```/g, "'''")
-    .replace(/~~~+/g, (run) => `~\u200b${run.slice(1)}`)
     .replace(/!\[/g, '!\u200b[')
     .replace(/\]\(/g, ']\u200b(')
     .replace(/\]\[/g, ']\u200b[')
@@ -172,7 +202,18 @@ export function sanitizeText(text, max, opts = {}) {
     .replace(/mailto:/gi, 'mailto:\u200b')
     .replace(/#(?=\d)/g, '\u200b#\u200b')
     .replace(/^([ \t]*)\//gm, '$1&#47;')
-  return clip(safe, max)
+  if (opts.inlineCode) {
+    // GFM still parses Markdown inside raw HTML code tags.
+    const escaped = safe.replace(/[_*~`\\]/g, (char) => `&#${char.charCodeAt(0)};`)
+    // Clipping can leave a partial character reference at the end.
+    return clip(escaped, max).replace(/&(?:#\d*|[a-z]*)…$/i, '…')
+  }
+  return clip(safe.replace(/```/g, "'''").replace(/~~~+/g, (run) => `~\u200b${run.slice(1)}`), max)
+}
+
+function formatInlineCode(value, max, extraSecrets, suffix = '') {
+  const text = sanitizeText(value, max, { singleLine: true, extraSecrets, inlineCode: true })
+  return `<code>${text}${suffix}</code>`
 }
 
 function sentenceEnd(text) {
@@ -202,7 +243,7 @@ const REVIEW_MARKER = /\/?\bmegalens\s*[:-]\s*(?:review|app|meta|walkthrough)(?:
 const OVERRIDE_REQUEST = /\b(?:ignore|disregard|override|forget)\s+(?:(?:all|any|the|your|previous|prior|earlier|above|system|developer)\s+)*(?:instructions?|prompts?|rules?)\b/gi
 
 function cleanPromptText(value, max, extraSecrets) {
-  const clean = redactSecrets(String(value ?? ''), extraSecrets)
+  const clean = redactReviewText(String(value ?? ''), extraSecrets)
     .replace(/\p{Default_Ignorable_Code_Point}/gu, '')
     .replace(/\s+/gu, ' ')
     .replace(/\p{Cc}/gu, '')
@@ -213,12 +254,12 @@ function cleanPromptText(value, max, extraSecrets) {
     .replace(OVERRIDE_REQUEST, '[removed]')
     .trim()
   // Fenced code preserves literal angle brackets and ampersands.
-  return clip(redactSecrets(clean, extraSecrets), max - 1)
+  return clip(redactReviewText(clean, extraSecrets), max - 1)
 }
 
 function formatFixPrompt(finding, extraSecrets, paths) {
   const file = finding.file
-  if (!file || !paths?.has(file) || redactSecrets(file, extraSecrets) !== file) return FIX_PROMPT
+  if (!file || !paths?.has(file) || redactReviewText(file, extraSecrets) !== file) return FIX_PROMPT
 
   // Preserve the real path in JSON string notation while escaping fence and markup characters.
   const unicodeEscape = (char) => char.split('').map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')
@@ -293,9 +334,8 @@ export function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
 function formatSummaryItem(finding, extraSecrets, fixPromptPaths) {
   const options = { singleLine: true, extraSecrets }
   const priority = sanitizeText(finding.priority || 'P2', 10, options)
-  const where = finding.file
-    ? ` <code>${sanitizeText(finding.file, 200, options)}${finding.line_start ? `:${finding.line_start}` : ''}</code>`
-    : ''
+  const line = finding.line_start ? `:${finding.line_start}` : ''
+  const where = finding.file ? ` ${formatInlineCode(finding.file, 200, extraSecrets, line)}` : ''
   const title = sentenceEnd(sanitizeText(finding.title || 'Finding', 200, options))
   const claim = finding.claim ? sanitizeText(finding.claim, 300, options) : ''
   const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 300, options) : ''
@@ -313,7 +353,7 @@ const FILE_CHANGE_LABELS = new Map([
 /** Format the PR-wide walkthrough from kept engine findings and the GitHub PR file list. */
 export function formatWalkthroughComment({ headSha, findings = [], pullFiles, extraSecrets }) {
   const text = (value, max) => sanitizeText(value, max, { singleLine: true, extraSecrets })
-  const path = (value) => `<code>${text(value, 200)}</code>`
+  const path = (value) => formatInlineCode(value, 200, extraSecrets)
   const files = pullFiles.filter((file) => typeof file?.filename === 'string' && file.filename)
   const lines = [WALKTHROUGH_MARKER, `### MegaLens PR walkthrough for \`${text(headSha?.slice(0, 7), 7)}\``, '', '**What changed**', '']
 

@@ -39,7 +39,8 @@ import {
   titleHash,
   WALKTHROUGH_MARKER,
 } from './format.js'
-import { createGitHubApi } from './github-api.js'
+import { createGitHubApi, isForkPullRequest } from './github-api.js'
+export { isForkPullRequest } from './github-api.js'
 import { createMegaLensReview, DEFAULT_MEGALENS_API_URL } from './megalens-api.js'
 import { errorText, redactSecrets } from './redact.js'
 
@@ -60,21 +61,6 @@ export const BYO_FORK_SKIP_SUMMARY = 'skipped: BYO key is not used on fork PRs; 
 
 function changedPaths(files) {
   return new Set(files.filter(f => typeof f?.filename === 'string' && f.status !== 'removed' && f.status !== 'unchanged').map(f => f.filename))
-}
-
-/**
- * Determine whether a pull_request webhook payload came from a fork.
- * @param {any} pr
- * @returns {boolean}
- */
-export function isForkPullRequest(pr) {
-  if (!pr || typeof pr !== 'object') return false
-  if (pr.head?.repo?.fork === true) return true
-  const headFull = pr.head?.repo?.full_name
-  const baseFull = pr.base?.repo?.full_name
-  if (headFull && baseFull && headFull !== baseFull) return true
-  if (pr.head && pr.head.repo === null) return true
-  return false
 }
 
 /**
@@ -1139,8 +1125,14 @@ export async function runAction(deps = {}) {
   let inlinePostedCount = 0
   let inlineWarning = null
   const repository = `${owner}/${repo}`.toLowerCase()
+  const sameRepoIds = (live) => (
+    live.headRepoId == null && live.baseRepoId == null
+      ? true
+      : typeof live.headRepoId === 'number' && typeof live.baseRepoId === 'number' && live.headRepoId === live.baseRepoId
+  )
   const promptPaths = (live) => (
     live?.headSha === headSha && live.baseSha && live.baseSha === latestPr?.baseSha && !live.isFork
+      && sameRepoIds(live)
       && live.headRepoFullName?.toLowerCase() === repository && live.baseRepoFullName?.toLowerCase() === repository
       && TRUSTED_PR_AUTHORS.has(live.authorAssociation) ? paths : undefined
   )

@@ -232,7 +232,7 @@ Open **Copy fix prompt** under a finding to copy a ready-to-paste prompt for you
 
 After a complete or partial review, MegaLens updates one walkthrough comment per PR across review tiers. It lists up to 15 changed files and up to three places to start reading. It uses the review result and the PR file list, with no extra model calls or credits. Keep the same comment author across runs so `publish` updates the existing comment in place.
 
-To set up the three-job workflow and `MEGALENS_TOKEN` repository secret automatically from your terminal, run `npx megalens-review init` (requires GitHub CLI `gh`). See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.0`).
+Copy one of the pinned three-job workflows above into `.github/workflows/` and set your `MEGALENS_TOKEN` repository secret. See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.0`).
 
 Both workflows use the same concurrency group for a given PR. GitHub Actions shares concurrency groups across workflow files in the same repository. With `cancel-in-progress: true`, a new run can cancel a running review for the same PR from either workflow. [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-only-cancel-in-progress-jobs-or-runs-for-the-current-workflow)
 

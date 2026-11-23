@@ -416,3 +416,160 @@ test('selectNewInlineFindings dedupes redacted marker paths using comment.path',
   assert.equal(dedupe.alreadyPostedCount, 1)
   assert.deepEqual(dedupe.toPost, [])
 })
+
+test('README does not advertise broken megalens-review init and pins valid workflow action SHAs', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
+  assert.doesNotMatch(readme, /megalens-review\s+init/i)
+  assert.equal(readme.includes('ea165f8d65b6e75b540449e92b4886c43607fa02'), false)
+
+  const expectedPins = new Map([
+    ['actions/checkout', '11bd71901bbe5b1630ceea73d27597364c9af683'],
+    ['actions/upload-artifact', 'ea165f8d65b6e75b540449e92b4886f43607fa02'],
+    ['actions/download-artifact', 'd3f86a106a0bac45b974a628896c90dbdf5c8093'],
+  ])
+  const yamlBlocks = [...readme.matchAll(/```yaml\n([\s\S]*?)```/g)].map((m) => m[1])
+  assert.ok(yamlBlocks.length >= 2)
+  let checkedUses = 0
+  for (const block of yamlBlocks) {
+    for (const match of block.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)) {
+      checkedUses += 1
+      const [action, ref] = match[1].split('@')
+      assert.match(ref ?? '', /^[0-9a-f]{40}$/, `expected 40-hex pin for ${match[1]}`)
+      if (expectedPins.has(action)) {
+        assert.equal(ref, expectedPins.get(action), `unexpected pin for ${action}`)
+      } else {
+        assert.equal(action, 'megalens/review-action')
+      }
+    }
+  }
+  assert.ok(checkedUses >= 12)
+})
+
+test('redacts Basic credentials and rk_ review keys in inline markers, prompts, summaries, and walkthroughs', () => {
+  const [template] = copyBlocks(formatInlineComment(finding))
+  const encodedFixture = Buffer.from('fixture:example').toString('base64')
+
+  // Basic Auth inside a verified filename: redacted in marker and forces static template.
+  const basicFile = `src/Basic ${encodedFixture}.ts`
+  const basicInline = formatInlineComment({ ...finding, file: basicFile }, undefined, new Set([basicFile]))
+  assert.equal(basicInline.includes(encodedFixture), false)
+  assert.equal(basicInline.includes(encodeURIComponent(encodedFixture)), false)
+  assert.deepEqual(parseInlineMarker(basicInline), {
+    file: 'src/[redacted].ts',
+    lineStart: 8,
+    lineEnd: 12,
+    titleSha: titleHash(finding.title),
+    source: 'action',
+  })
+  assert.deepEqual(copyBlocks(basicInline), [template])
+
+  // Basic Auth header & bare Basic credential in prose, while preserving English "Basic setup".
+  const proseFinding = {
+    ...finding,
+    title: 'Basic setup leaks credentials',
+    claim: `Logs Authorization: Basic ${encodedFixture} on error`,
+    failure_scenario: `Replay with Basic ${encodedFixture}`,
+    expected_behavior: 'Strip Basic auth headers',
+  }
+  const paths = new Set([proseFinding.file])
+  for (const body of [
+    formatInlineComment(proseFinding, undefined, paths),
+    formatSummaryComment({ doc: { status: 'complete' }, strongFindings: [proseFinding], fixPromptPaths: paths }),
+  ]) {
+    assert.equal(body.includes(encodedFixture), false)
+    assert.match(body, /Basic setup leaks credentials/)
+    const [prompt] = copyBlocks(body)
+    assert.equal(prompt.includes(encodedFixture), false)
+    assert.match(prompt, /Problem: Basic setup leaks credentials\. Logs \[redacted\] on error\./)
+    assert.match(prompt, /Failure scenario: Replay with \[redacted\]\./)
+  }
+
+  // Reassembled Basic credential after stripping invisible characters inside cleanPromptText.
+  const reassembled = { ...proseFinding, failure_scenario: `Replay with Ba\u200bsic ${encodedFixture}` }
+  const [reassembledPrompt] = copyBlocks(formatInlineComment(reassembled, undefined, paths))
+  assert.equal(reassembledPrompt.includes(encodedFixture), false)
+  assert.match(reassembledPrompt, /Failure scenario: Replay with \[redacted\]\./)
+
+  // rk_ review key before clipping in inline and summary output.
+  const rkKey = `rk_${'k'.repeat(43)}`
+  const prefix = `${'x'.repeat(184)}/`
+  const rkFinding = { ...finding, title: `${prefix}${rkKey}` }
+  for (const body of [
+    formatInlineComment(rkFinding, undefined, paths),
+    formatSummaryComment({ doc: { status: 'complete' }, strongFindings: [rkFinding], fixPromptPaths: paths }),
+  ]) {
+    assert.equal(body.includes(rkKey.slice(0, 14)), false)
+    assert.ok(body.includes(`${prefix}[redacted]`))
+  }
+
+  // rk_ review key in a filename with underscores in walkthrough and summary.
+  const appCredential = `rk_${'x'.repeat(24)}`
+  const credPath = `src/${appCredential}/__init__.py`
+  const walkthrough = formatWalkthroughComment({ headSha: 'a'.repeat(40), pullFiles: [{ filename: credPath }] })
+  const summary = formatSummaryComment({ doc: { status: 'complete' }, strongFindings: [{ ...finding, file: credPath }] })
+  assert.equal(walkthrough.includes(appCredential), false)
+  assert.equal(summary.includes(appCredential), false)
+  assert.ok(walkthrough.includes('<code>src/[redacted]/&#95;&#95;init&#95;&#95;.py</code>'))
+  assert.ok(summary.includes('<code>src/[redacted]/&#95;&#95;init&#95;&#95;.py:8</code>'))
+})
+
+test('entity-escapes Markdown delimiters inside HTML code tags so filenames like __init__.py render literally', () => {
+  const decodeHtml = (raw) => raw
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+
+  const strong = { ...finding, file: 'src/pkg/__init__.py' }
+  const normal = { ...finding, file: 'src/__tests__/a*b*c.ts', priority: 'P2', strength: 'normal' }
+  const renamedFrom = 'src/~~old~~.ts'
+  const withBackticks = 'src/a`b`c.ts'
+  const withDelimiterRuns = 'src/~~~a~~~```b```\\*.ts'
+  const withHtml = 'src/<a&b>.ts'
+
+  const walkthrough = formatWalkthroughComment({
+    headSha: 'a'.repeat(40),
+    findings: [strong, normal],
+    pullFiles: [
+      { filename: strong.file, status: 'modified', additions: 2, deletions: 1 },
+      { filename: normal.file, status: 'renamed', previous_filename: renamedFrom, additions: 4, deletions: 2 },
+      { filename: withBackticks, status: 'modified', changes: 5 },
+      { filename: withDelimiterRuns, status: 'modified', changes: 3 },
+      { filename: withHtml, status: 'added', changes: 1 },
+    ],
+  })
+  const summary = formatSummaryComment({
+    headSha: 'a'.repeat(40),
+    doc: { status: 'complete', tier: 'standard', review_id: 'rv_example' },
+    strongFindings: [strong],
+    normalFindings: [normal],
+  })
+
+  for (const body of [walkthrough, summary]) {
+    const codeTags = [...body.matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => m[1])
+    assert.ok(codeTags.length > 0)
+    for (const inner of codeTags) {
+      // No unescaped Markdown emphasis/strike/code/escape delimiters inside raw HTML <code> tags.
+      assert.doesNotMatch(inner, /[_*~`\\]/)
+    }
+  }
+
+  const decodedWalkthroughCodes = [...walkthrough.matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => decodeHtml(m[1]))
+  for (const expected of [strong.file, normal.file, renamedFrom, withBackticks, withDelimiterRuns, withHtml]) {
+    assert.ok(decodedWalkthroughCodes.includes(expected), `expected walkthrough code tag for ${expected}`)
+  }
+  assert.ok(walkthrough.includes('<code>src/pkg/&#95;&#95;init&#95;&#95;.py</code>:8'))
+
+  const decodedSummaryCodes = [...summary.matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => decodeHtml(m[1]))
+  assert.ok(decodedSummaryCodes.includes('src/pkg/__init__.py:8'))
+  assert.ok(decodedSummaryCodes.includes('src/__tests__/a*b*c.ts:8'))
+
+  // Clipping a long path does not leave a partial numeric character reference at the end.
+  const longPrefix = `src/${'a'.repeat(193)}`
+  const clippedWalkthrough = formatWalkthroughComment({
+    headSha: 'a'.repeat(40),
+    pullFiles: [{ filename: `${longPrefix}__init__.py` }],
+  })
+  assert.ok(clippedWalkthrough.includes(`<code>${longPrefix}…</code>`))
+  assert.doesNotMatch(clippedWalkthrough, /&(?:#\d*|[a-z]*)…/)
+})
