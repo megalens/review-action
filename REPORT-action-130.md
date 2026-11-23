@@ -128,3 +128,28 @@ Reviewed `/root/review-input/rv-action-130/FIRST.md`, `/root/review-input/rv-act
 
 - `npm test`: **177/177 passed** (23 suites, 0 failures, 0 skipped).
 - `node --check src/*.js dist/*.js scripts/*.mjs` and `git diff --check`: passed.
+
+## Fix round (mediums)
+
+Audited and hardened all three Medium findings from `/root/review-input/rv-action-130/FIRST.md` (#2, #3, #4). Point 1 (High, `npx megalens-review init` in the engine package) is tracked and fixed separately outside this repository and was ignored per scope.
+
+1. **FIRST.md #2 (Medium) — Credential redaction parity with the App in prompts and hidden markers:**
+   - Verified `redactReviewText` in `src/format.js:80-109` matches the App's `src/lib/github-app/redact.ts` + `src/redact.js` coverage (`rk_` review keys, `Authorization: Basic ...`, canonical base64 `Basic <user:pass>`, plus all `SECRET_PATTERNS` and `extraSecrets`) before clipping and encoding across `inlineMarker`, `sanitizeText`, `cleanPromptText`, and `formatFixPrompt`.
+   - Expanded regression coverage in `test/fix-prompt-summary.test.js:510-550` to also assert that `rk_` keys inside verified filenames are redacted in `inlineMarker` and force the static placeholder prompt in both inline and summary output, that Basic/`rk_` credentials at the `cleanPromptText` clipping boundary (`expected_behavior`) are redacted before clipping, and that `selectNewInlineFindings` still deduplicates Basic/`rk_`-redacted markers via `comment.path`.
+
+2. **FIRST.md #3 (Medium) — Trusted same-repo branch PRs in forked repositories:**
+   - Tightened `isForkPullRequest` in `src/github-api.js:10-35` to require integer repository IDs (`Number.isInteger`) and fail closed whenever `base.repo` carries an identity (`id` or `full_name`) that `head.repo` fails to match (including non-overlapping identity shapes), while continuing to treat same-repository PRs inside a repository with `fork: true` as non-fork (`false`).
+   - Verified `src/action.js:437,562,1127-1138` allows automatic `pull_request` reviews and fills inline/summary prompts for trusted authors (`OWNER`/`MEMBER`/`COLLABORATOR`) on same-repo PRs in forked repositories while preserving isolation for cross-repo PRs and missing/deleted `head.repo`.
+   - Expanded regression coverage in `test/fork-and-permissions.test.js:251-264,427-475` for non-overlapping identity fail-closed behavior and `issue_comment` `full` mode succeeding with filled inline and summary prompts on a same-repo PR inside a forked repository.
+
+3. **FIRST.md #4 (Medium) — Filenames like `__init__.py` in findings and walkthrough:**
+   - Verified `formatInlineCode` / `sanitizeText(..., { inlineCode: true })` in `src/format.js:205-217,338,356` matches the App's `action-shared/format.js:192-204`, entity-escaping Markdown delimiters (`[_*~`\\]`) inside `<code>...</code>` and trimming partial trailing entities after `clip`.
+   - Confirmed via local `micromark` + `micromark-extension-gfm` rendering that `src/pkg/__init__.py`, `src/__tests__/a*b*c.ts`, `src/~~old~~.ts`, backticks, delimiter runs, and HTML brackets render literally in both walkthrough and summary output with zero stray `<strong>`/`<em>` tags.
+   - Expanded `test/fix-prompt-summary.test.js:582-615` to also verify filled prompts keep literal `"src/pkg/__init__.py"` and `"src/__tests__/a*b*c.ts"` inside fenced code blocks alongside escaped `<code>` tags in findings and walkthrough.
+
+### Verification
+
+- `npm test`: **177/177 passed** (23 suites, 0 failures, 0 skipped).
+- `node --check src/*.js dist/*.js scripts/*.mjs` and `git diff --check`: passed.
+- `diff -u` of `src/{findings,diff,redact}.js` against `/root/review-input/ws-fixprompt-real/src/lib/github-setup/action-shared/{findings,diff,redact}.js`: **0 diff**.
+- Local `micromark` + `micromark-extension-gfm` render check on `formatWalkthroughComment` and `formatSummaryComment`: passed.

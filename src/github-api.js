@@ -11,8 +11,8 @@ export function isForkPullRequest(pr) {
   if (!pr || typeof pr !== 'object') return false
   if (pr.head && pr.head.repo === null) return true
 
-  const headId = typeof pr.head?.repo?.id === 'number' ? pr.head.repo.id : null
-  const baseId = typeof pr.base?.repo?.id === 'number' ? pr.base.repo.id : null
+  const headId = Number.isInteger(pr.head?.repo?.id) ? pr.head.repo.id : null
+  const baseId = Number.isInteger(pr.base?.repo?.id) ? pr.base.repo.id : null
   if (headId !== null && baseId !== null && headId !== baseId) return true
 
   const headFull = typeof pr.head?.repo?.full_name === 'string' && pr.head.repo.full_name
@@ -27,7 +27,7 @@ export function isForkPullRequest(pr) {
     return false
   }
 
-  if ((baseId !== null && headId === null && !headFull) || (baseFull && !headFull && headId === null)) {
+  if (baseId !== null || baseFull !== null) {
     return true
   }
   if (pr.head?.repo?.fork === true) return true

@@ -507,15 +507,51 @@ test('redacts Basic credentials and rk_ review keys in inline markers, prompts, 
     assert.ok(body.includes(`${prefix}[redacted]`))
   }
 
-  // rk_ review key in a filename with underscores in walkthrough and summary.
+  // rk_ review key in a filename with underscores in walkthrough, summary, inline marker, and prompt gate.
   const appCredential = `rk_${'x'.repeat(24)}`
   const credPath = `src/${appCredential}/__init__.py`
+  const credFinding = { ...finding, file: credPath }
+  const credPaths = new Set([credPath])
   const walkthrough = formatWalkthroughComment({ headSha: 'a'.repeat(40), pullFiles: [{ filename: credPath }] })
-  const summary = formatSummaryComment({ doc: { status: 'complete' }, strongFindings: [{ ...finding, file: credPath }] })
-  assert.equal(walkthrough.includes(appCredential), false)
-  assert.equal(summary.includes(appCredential), false)
+  const summary = formatSummaryComment({ doc: { status: 'complete' }, strongFindings: [credFinding], fixPromptPaths: credPaths })
+  const rkInline = formatInlineComment(credFinding, undefined, credPaths)
+  for (const body of [walkthrough, summary, rkInline]) {
+    assert.equal(body.includes(appCredential), false)
+    assert.equal(body.includes(encodeURIComponent(appCredential)), false)
+  }
   assert.ok(walkthrough.includes('<code>src/[redacted]/&#95;&#95;init&#95;&#95;.py</code>'))
   assert.ok(summary.includes('<code>src/[redacted]/&#95;&#95;init&#95;&#95;.py:8</code>'))
+  assert.deepEqual(parseInlineMarker(rkInline), {
+    file: 'src/[redacted]/__init__.py',
+    lineStart: 8,
+    lineEnd: 12,
+    titleSha: titleHash(finding.title),
+    source: 'action',
+  })
+  assert.deepEqual(copyBlocks(rkInline), [template])
+  assert.deepEqual(copyBlocks(summary), [template])
+
+  // Redacted Basic/rk_ inline markers still deduplicate cleanly via comment.path.
+  for (const [f, posted] of [[{ ...finding, file: basicFile }, basicInline], [credFinding, rkInline]]) {
+    const dedupe = selectNewInlineFindings(
+      [f],
+      [{ user: { login: 'github-actions[bot]' }, body: posted, path: f.file, line: 8 }],
+      { ownLogin: 'github-actions[bot]' },
+    )
+    assert.equal(dedupe.alreadyPostedCount, 1)
+    assert.deepEqual(dedupe.toPost, [])
+  }
+
+  // Credentials near the prompt clipping boundary (expected_behavior) are redacted before clipping.
+  const boundaryPrefix = `${'y'.repeat(280)} `
+  const boundaryFinding = {
+    ...finding,
+    expected_behavior: `${boundaryPrefix}Basic ${encodedFixture} ${rkKey}`,
+  }
+  const [boundaryPrompt] = copyBlocks(formatInlineComment(boundaryFinding, undefined, paths))
+  assert.equal(boundaryPrompt.includes(encodedFixture.slice(0, 8)), false)
+  assert.equal(boundaryPrompt.includes(rkKey.slice(0, 10)), false)
+  assert.ok(boundaryPrompt.includes('[redacted]'))
 })
 
 test('entity-escapes Markdown delimiters inside HTML code tags so filenames like __init__.py render literally', () => {
@@ -548,6 +584,7 @@ test('entity-escapes Markdown delimiters inside HTML code tags so filenames like
     doc: { status: 'complete', tier: 'standard', review_id: 'rv_example' },
     strongFindings: [strong],
     normalFindings: [normal],
+    fixPromptPaths: new Set([strong.file, normal.file]),
   })
 
   for (const body of [walkthrough, summary]) {
@@ -558,6 +595,12 @@ test('entity-escapes Markdown delimiters inside HTML code tags so filenames like
       assert.doesNotMatch(inner, /[_*~`\\]/)
     }
   }
+
+  // Filled prompts keep literal paths inside fenced code blocks without HTML entity escaping.
+  const summaryPrompts = copyBlocks(summary)
+  assert.equal(summaryPrompts.length, 2)
+  assert.match(summaryPrompts[0], /^Fix this bug in "src\/pkg\/__init__\.py" \(lines 8-12\)\./)
+  assert.match(summaryPrompts[1], /^Fix this bug in "src\/__tests__\/a\*b\*c\.ts" \(lines 8-12\)\./)
 
   const decodedWalkthroughCodes = [...walkthrough.matchAll(/<code>([\s\S]*?)<\/code>/g)].map((m) => decodeHtml(m[1]))
   for (const expected of [strong.file, normal.file, renamedFrom, withBackticks, withDelimiterRuns, withHtml]) {

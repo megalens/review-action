@@ -255,6 +255,13 @@ describe('same-repository PRs inside a forked repository vs cross-repository for
       }),
       true,
     )
+    assert.equal(
+      isForkPullRequest({
+        base: { repo: { id: 777 } },
+        head: { repo: { full_name: 'stranger/my-fork', fork: false } },
+      }),
+      true,
+    )
   })
 
   it('pull_request create and publish run normally for same-repo PRs in a forked repo and still skip cross-repo or deleted-head PRs', async () => {
@@ -417,13 +424,58 @@ describe('same-repository PRs inside a forked repository vs cross-repository for
       return { res, postedReviews, postedComments }
     }
 
-    // Same-repo PR in a forked repo -> filled prompts in both inline and summary.
+    // Same-repo PR in a forked repo -> filled prompts in both inline and summary (publish and full modes).
     const sameRepo = await runPublishWithHeadRepo({ id: 777, full_name: 'alice/my-fork', fork: true })
     assert.equal(sameRepo.res.status, 'complete')
     const [inlineFilled] = copyBlocks(sameRepo.postedReviews[0].body)
     const [summaryFilled] = copyBlocks(sameRepo.postedComments.find((b) => b.startsWith(summaryMarker('standard'))))
     assert.match(inlineFilled, /^Fix this bug in "src\/x\.js" \(line 2\)\./)
     assert.equal(summaryFilled, inlineFilled)
+
+    const fullReviews = []
+    const fullComments = []
+    const fullSameRepoRes = await runAction({
+      env: {
+        GITHUB_EVENT_NAME: 'issue_comment',
+        GITHUB_REPOSITORY: 'alice/my-fork',
+        INPUT_MODE: 'full',
+        'INPUT_MEGALENS-TOKEN': 'ml_tok_fixture_1234',
+        'INPUT_GITHUB-TOKEN': 'ghs_fixture_token',
+      },
+      payload: issueCommentPayload,
+      createGitHubApi: (token) => createGitHubApi(token, {
+        fetchImpl: async (url, init) => {
+          if (url.endsWith('/user')) return Response.json({ login: 'github-actions[bot]' })
+          if (url.endsWith('/collaborators/alice/permission')) return Response.json({ permission: 'admin' })
+          if (url.endsWith('/pulls/12')) {
+            return Response.json({
+              state: 'open',
+              draft: false,
+              author_association: 'OWNER',
+              base: { sha: baseSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+              head: { sha: headSha, repo: { id: 777, full_name: 'alice/my-fork', fork: true } },
+            })
+          }
+          if (url.includes('/pulls/12/files')) return Response.json([{ filename: 'src/x.js', status: 'modified', patch: PATCH }])
+          if (url.includes('/pulls/12/comments')) return Response.json([])
+          if (url.includes('/pulls/12/reviews') && init.method === 'POST') {
+            fullReviews.push(...JSON.parse(init.body).comments)
+            return Response.json({ id: 511 }, { status: 201 })
+          }
+          if (url.includes('/issues/12/comments') && init.method === 'GET') return Response.json([])
+          if (url.includes('/issues/12/comments') && init.method === 'POST') {
+            fullComments.push(JSON.parse(init.body).body)
+            return Response.json({ id: 610 + fullComments.length }, { status: 201 })
+          }
+          throw new Error(`Unexpected fetch: ${init.method} ${url}`)
+        },
+      }),
+      runEngine: async () => ({ exitCode: 0, stdout: '', stderr: '', errorMessage: null, rawFindings: findingsRaw }),
+    })
+    assert.equal(fullSameRepoRes.status, 'complete')
+    assert.equal(fullReviews.length, 1)
+    assert.equal(copyBlocks(fullReviews[0].body)[0], inlineFilled)
+    assert.equal(copyBlocks(fullComments.find((b) => b.startsWith(summaryMarker('standard'))))[0], inlineFilled)
 
     // Cross-repo fork PR and deleted head repo -> placeholder template only, and full mode refuses.
     for (const untrustedHeadRepo of [
