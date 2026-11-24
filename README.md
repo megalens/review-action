@@ -14,7 +14,7 @@ Runs the `megalens-review` engine CLI (`ENGINE-V2-CONTRACT.md`) inside an isolat
   - `contents: read` — read repository files for review / PR metadata.
   - `pull-requests: write` — post the PR review for `strong` P0/P1 findings and create/update the PR summary comment via the PR/issue comments endpoint. **`issues: write` is not needed.**
 - **`full` mode (`mode: full`):** **same-repo trusted PRs only, not for forks.** Always use the three-job `create` -> `review` -> `publish` split for any repository that accepts fork PRs.
-- **Pin third-party actions and `megalens/review-action` by commit SHA** (the examples below pin `megalens/review-action` to the v1.3.0 commit in every job with the 40-character release commit SHA).
+- **Pin third-party actions and `megalens/review-action` by commit SHA** (the examples below pin `megalens/review-action` to the v1.3.1 commit in every job with the 40-character release commit SHA).
 - **Self-hosted runners:** **Do not use self-hosted runners on public repositories for fork PRs.** A fork PR or compromised checkout on a persistent runner can expose cached credentials or host state. The Action emits a warning when `RUNNER_ENVIRONMENT == self-hosted` on a fork PR.
 
 ## What Leaves the Runner
@@ -53,7 +53,7 @@ jobs:
       base_sha: ${{ steps.create.outputs.base_sha }}
     steps:
       - id: create
-        uses: megalens/review-action@38aae94fbc4f4bdb05964c249d106c1c13cb632c # v1.3.0
+        uses: megalens/review-action@3adef5e41760c99d9d52f96a7b3c0decdea24a5f # v1.3.1
         with:
           mode: create
           tier: standard
@@ -76,7 +76,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: megalens/review-action@38aae94fbc4f4bdb05964c249d106c1c13cb632c # v1.3.0
+      - uses: megalens/review-action@3adef5e41760c99d9d52f96a7b3c0decdea24a5f # v1.3.1
         env:
           MEGALENS_REVIEW_ID: ${{ needs.create.outputs.review_id }}
           MEGALENS_REVIEW_KEY: ${{ needs.create.outputs.review_key }}
@@ -108,7 +108,7 @@ jobs:
           name: megalens-findings
           path: ${{ runner.temp }}
 
-      - uses: megalens/review-action@38aae94fbc4f4bdb05964c249d106c1c13cb632c # v1.3.0
+      - uses: megalens/review-action@3adef5e41760c99d9d52f96a7b3c0decdea24a5f # v1.3.1
         with:
           mode: publish
           tier: standard
@@ -154,7 +154,7 @@ jobs:
       base_sha: ${{ steps.create.outputs.base_sha }}
     steps:
       - id: create
-        uses: megalens/review-action@38aae94fbc4f4bdb05964c249d106c1c13cb632c # v1.3.0
+        uses: megalens/review-action@3adef5e41760c99d9d52f96a7b3c0decdea24a5f # v1.3.1
         with:
           mode: create
           tier: standard
@@ -178,7 +178,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: megalens/review-action@38aae94fbc4f4bdb05964c249d106c1c13cb632c # v1.3.0
+      - uses: megalens/review-action@3adef5e41760c99d9d52f96a7b3c0decdea24a5f # v1.3.1
         env:
           MEGALENS_REVIEW_ID: ${{ needs.create.outputs.review_id }}
           MEGALENS_REVIEW_KEY: ${{ needs.create.outputs.review_key }}
@@ -210,7 +210,7 @@ jobs:
           name: megalens-findings
           path: ${{ runner.temp }}
 
-      - uses: megalens/review-action@38aae94fbc4f4bdb05964c249d106c1c13cb632c # v1.3.0
+      - uses: megalens/review-action@3adef5e41760c99d9d52f96a7b3c0decdea24a5f # v1.3.1
         with:
           mode: publish
           tier: standard
@@ -236,14 +236,14 @@ After a complete or partial review, MegaLens updates one walkthrough comment per
 
 ### Manual setup
 
-1. Look up the 40-character commit SHA for the `megalens/review-action` release you want to install on the [GitHub Releases](https://github.com/megalens/review-action/releases) page (target: `v1.3.0`), or resolve it from Git once the release tag is published:
+1. Look up the 40-character commit SHA for the `megalens/review-action` release you want to install on the [GitHub Releases](https://github.com/megalens/review-action/releases) page (target: `v1.3.1`), or resolve it from Git once the release tag is published:
    ```bash
-   git ls-remote --tags https://github.com/megalens/review-action.git v1.3.0 'v1.3.0^{}' | tail -n 1 | awk '{print $1}'
+   git ls-remote --tags https://github.com/megalens/review-action.git v1.3.1 'v1.3.1^{}' | tail -n 1 | awk '{print $1}'
    ```
-2. Copy one of the three-job workflow templates above into `.github/workflows/`. They already pin `megalens/review-action` to the v1.3.0 commit in all three jobs (`create`, `review`, `publish`).
+2. Copy one of the three-job workflow templates above into `.github/workflows/`. They already pin `megalens/review-action` to the v1.3.1 commit in all three jobs (`create`, `review`, `publish`).
 3. Add your `MEGALENS_TOKEN` repository secret under **Settings -> Secrets and variables -> Actions**.
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.0`).
+See [CHANGELOG.md](CHANGELOG.md) for release notes (current release target: `v1.3.1`).
 
 Both workflows use the same concurrency group for a given PR. GitHub Actions shares concurrency groups across workflow files in the same repository. With `cancel-in-progress: true`, a new run can cancel a running review for the same PR from either workflow. [GitHub Actions concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-only-cancel-in-progress-jobs-or-runs-for-the-current-workflow)
 
