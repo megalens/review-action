@@ -1,6 +1,7 @@
 import { redactSecrets } from './redact.js'
 
 export const DEFAULT_GITLAB_API_URL = 'https://gitlab.com/api/v4'
+const GITLAB_MEMBERSHIP_TIMEOUT_MS = 5_000
 
 export class GitLabApiError extends Error {
   /**
@@ -63,10 +64,11 @@ export function createGitLabApi(token, opts = {}) {
   /** @type {Promise<string | null> | null} */
   let cachedUsernamePromise = null
 
-  async function call(method, path, body) {
+  async function call(method, path, body, signal) {
     const res = await fetchImpl(`${baseUrl}${path}`, {
       method,
       redirect: 'error',
+      ...(signal ? { signal } : {}),
       headers: {
         'PRIVATE-TOKEN': cleanToken,
         Accept: 'application/json',
@@ -199,6 +201,7 @@ export function createGitLabApi(token, opts = {}) {
       }
       const sourceProjectId = data?.source_project_id != null ? String(data.source_project_id) : null
       const targetProjectId = data?.target_project_id != null ? String(data.target_project_id) : null
+      const authorId = data?.author?.id
       return {
         iid: Number(mrIid),
         open: data.state === 'opened',
@@ -208,8 +211,22 @@ export function createGitLabApi(token, opts = {}) {
         startSha,
         sourceProjectId,
         targetProjectId,
+        authorId: Number.isSafeInteger(authorId) && authorId > 0 ? authorId : null,
         isFork: Boolean(sourceProjectId && targetProjectId && sourceProjectId !== targetProjectId),
       }
+    },
+
+    async getProjectMemberAccessLevel(projectId, userId) {
+      const res = await call(
+        'GET',
+        `${projectPath(projectId)}/members/all/${encodeURIComponent(String(userId))}`,
+        undefined,
+        AbortSignal.timeout(GITLAB_MEMBERSHIP_TIMEOUT_MS),
+      )
+      if (!res.ok) return fail(res, 'read project membership')
+      const member = await res.json()
+      if (member?.id !== userId || member?.state !== 'active') return null
+      return Number.isSafeInteger(member.access_level) ? member.access_level : null
     },
 
     async listMergeRequestDiffs(projectId, mrIid, maxPages = 30) {

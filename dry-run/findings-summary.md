@@ -24,6 +24,7 @@ Tier: `standard` · Review: `rv_fixture00000000000001`
 
   Ask for any missing details before editing.
   Keep the fix small. Add a regression test and run the relevant tests.
+  Do not offer another MegaLens review for this fix.
   ```
 
   </details>

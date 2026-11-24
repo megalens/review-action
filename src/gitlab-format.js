@@ -48,22 +48,16 @@ export function sanitizeGitLabText(text, max, opts = {}) {
 
 /**
  * Apply GLFM-only cross-reference neutralization (`!N`, `$N`, `%N`) to rendered markdown
- * while leaving HTML comment markers (`<!-- megalens... -->`) untouched.
+ * while preserving HTML comment markers and the literal text inside copyable code fences.
  * @param {string} markdown
  * @param {string[]} [extraSecrets]
  * @returns {string}
  */
 function finalizeGitLabMarkdown(markdown, extraSecrets = []) {
-  const neutralized = markdown
-    .split(/(<!--[\s\S]*?-->)/g)
-    .map((chunk) => {
-      if (chunk.startsWith('<!--') && chunk.endsWith('-->')) return chunk
-      return chunk
-        .replace(/!(?=\d)/g, '!\u200b')
-        .replace(/\$(?=\d)/g, '$\u200b')
-        .replace(/%(?=\d)/g, '%\u200b')
-    })
-    .join('')
+  const neutralized = markdown.replace(
+    /<!--[\s\S]*?-->|^ *```\n[\s\S]*?\n *```$|[!$%](?=\d)/gm,
+    (match) => match.length === 1 ? `${match}\u200b` : match,
+  )
   return extraSecrets.length > 0 ? redactSecrets(neutralized, extraSecrets) : neutralized
 }
 
@@ -72,11 +66,14 @@ function finalizeGitLabMarkdown(markdown, extraSecrets = []) {
  * Same low-noise structure and dedup marker as the GitHub Action.
  *
  * @param {{ id?: string, file: string, line_start: number, line_end?: number, title: string, claim?: string, failure_scenario?: string, priority?: string }} finding
- * @param {{ extraSecrets?: string[] }} [opts]
+ * @param {{ extraSecrets?: string[], fixPromptPaths?: Set<string> }} [opts]
  * @returns {string}
  */
 export function formatGitLabInlineNote(finding, opts = {}) {
-  return finalizeGitLabMarkdown(formatInlineComment(finding, opts.extraSecrets), opts.extraSecrets)
+  return finalizeGitLabMarkdown(
+    formatInlineComment(finding, opts.extraSecrets, opts.fixPromptPaths, true),
+    opts.extraSecrets,
+  )
 }
 
 /**
@@ -92,7 +89,7 @@ export function formatGitLabSummaryNote(input) {
     ? 0
     : input.gateStrongCount ?? input.strongFindings?.length ?? 0
   return finalizeGitLabMarkdown(
-    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER }),
+    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER, requireFixPromptDetails: true }),
     input?.extraSecrets,
   )
 }

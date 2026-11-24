@@ -342,21 +342,19 @@ export function buildGitLabDiffMap(mrDiffs) {
 export function partitionGitLabFindingsByDiff(findings, mrDiffs, opts = {}) {
   const diffMap = buildGitLabDiffMap(mrDiffs)
   const localMap = normalizeLocalDiffHunks(opts?.localDiffHunks)
-  const knownDiffFiles = new Set([
+  // Keep exact names even without a patch, so a real a/ or b/ directory takes precedence over a diff prefix.
+  const knownFiles = new Set([
     ...diffMap.keys(),
     ...(localMap ? localMap.keys() : []),
-  ])
-  const allMrFiles = new Set(
-    (Array.isArray(mrDiffs) ? mrDiffs : [])
+    ...(Array.isArray(mrDiffs) ? mrDiffs : [])
       .filter((d) => d && typeof d.new_path === 'string')
       .map((d) => d.new_path),
-  )
+  ])
 
   const inDiff = []
   const outOfDiff = []
   const inDiffIndexes = []
 
-  const knownFiles = knownDiffFiles.size > 0 ? knownDiffFiles : allMrFiles
   for (const [index, finding] of findings.entries()) {
     if (!finding || typeof finding.file !== 'string') {
       outOfDiff.push(finding)

@@ -378,6 +378,23 @@ test('fix prompt preserves literal operators, generics, and markup without HTML-
   assert.ok(clippedPrompt.includes(`Problem: ${prefix}&… Value [redacted].`))
 })
 
+test('every GitHub fix prompt ends with the same instruction', () => {
+  for (const paths of [undefined, new Set([finding.file])]) {
+    const inline = formatInlineComment(finding, undefined, paths)
+    const summary = formatSummaryComment({
+      doc: { status: 'complete' },
+      strongFindings: [finding],
+      normalFindings: [finding],
+      fixPromptPaths: paths,
+    })
+    const prompts = [...copyBlocks(inline), ...copyBlocks(summary)]
+    assert.equal(prompts.length, 3)
+    for (const prompt of prompts) {
+      assert.equal(prompt.split('\n').at(-1), 'Do not offer another MegaLens review for this fix.')
+    }
+  }
+})
+
 test('fix prompt clips on a character boundary without splitting surrogate pairs', () => {
   const character = '𐐀'
   for (const length of [157, 158]) {

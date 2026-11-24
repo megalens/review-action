@@ -227,6 +227,8 @@ function sentenceEnd(text) {
   return /[.…!?]$/.test(text) ? text : `${text}.`
 }
 
+const FIX_PROMPT_END = 'Do not offer another MegaLens review for this fix.'
+
 // Without a verified changed-file path, keep the copyable block independent of the finding.
 const FIX_PROMPT = [
   '<details>',
@@ -240,6 +242,7 @@ const FIX_PROMPT = [
   '',
   'Ask for any missing details before editing.',
   'Keep the fix small. Add a regression test and run the relevant tests.',
+  FIX_PROMPT_END,
   '```',
   '',
   '</details>',
@@ -263,7 +266,7 @@ function cleanPromptText(value, max, extraSecrets) {
   return clip(redactReviewText(clean, extraSecrets), max - 1)
 }
 
-function formatFixPrompt(finding, extraSecrets, paths) {
+function formatFixPrompt(finding, extraSecrets, paths, requireDetails) {
   const file = finding.file
   if (!file || !paths?.has(file) || redactReviewText(file, extraSecrets) !== file) return FIX_PROMPT
 
@@ -285,6 +288,7 @@ function formatFixPrompt(finding, extraSecrets, paths) {
   const scenario = clean(finding.failure_scenario, 300)
   const expected = clean(finding.expected_behavior, 300)
   if (!problem && !scenario) return FIX_PROMPT
+  if (requireDetails && (!location || !problem || !scenario)) return FIX_PROMPT
 
   return [
     '<details>',
@@ -301,6 +305,7 @@ function formatFixPrompt(finding, extraSecrets, paths) {
     '---',
     '',
     'Change only what is needed, keep existing behavior, add a regression test, and run the relevant tests.',
+    FIX_PROMPT_END,
     '```',
     '',
     '</details>',
@@ -312,7 +317,7 @@ function formatFixPrompt(finding, extraSecrets, paths) {
  * @param {{ id: string, file: string, line_start: number, line_end?: number, title: string, claim?: string, failure_scenario?: string, expected_behavior?: string, priority?: string }} finding
  * @returns {string}
  */
-export function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
+export function formatInlineComment(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails = false) {
   const priority = sanitizeText(finding.priority || 'P1', 10, { singleLine: true, extraSecrets })
   const title = sanitizeText(finding.title || 'Finding', 200, { singleLine: true, extraSecrets })
   const parts = [`**${priority} (strong): ${title}**`]
@@ -329,7 +334,7 @@ export function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
 
   parts.push(
     '',
-    formatFixPrompt(finding, extraSecrets, fixPromptPaths),
+    formatFixPrompt(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails),
     '',
     '<sub>MegaLens static review. A second opinion on the diff, not a verdict.</sub>',
     inlineMarker(finding, extraSecrets),
@@ -337,7 +342,7 @@ export function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
   return parts.join('\n')
 }
 
-function formatSummaryItem(finding, extraSecrets, fixPromptPaths) {
+function formatSummaryItem(finding, { extraSecrets, fixPromptPaths, requireFixPromptDetails }) {
   const options = { singleLine: true, extraSecrets }
   const priority = sanitizeText(finding.priority || 'P2', 10, options)
   const line = finding.line_start ? `:${finding.line_start}` : ''
@@ -347,7 +352,7 @@ function formatSummaryItem(finding, extraSecrets, fixPromptPaths) {
   const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 300, options) : ''
   const description = [title, sentenceEnd(claim), sentenceEnd(scenario)].filter(Boolean).join(' ')
   const appNote = finding.alsoFoundByApp ? ' *(also found by the App)*' : ''
-  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths).replace(/^(?=.)/gm, '  ')
+  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails).replace(/^(?=.)/gm, '  ')
   return `- **${priority}**${where}: ${description}${appNote}\n\n${prompt}\n`
 }
 
@@ -521,8 +526,8 @@ export function formatSummaryComment(input) {
     strongHeader.push(`0 inline strong findings from completed passes; ${normal.length} other finding${normal.length === 1 ? '' : 's'} below.`, '')
   }
 
-  const strongItems = strong.map((finding) => formatSummaryItem(finding, input.extraSecrets, input.fixPromptPaths))
-  const normalItems = normal.map((finding) => formatSummaryItem(finding, input.extraSecrets, input.fixPromptPaths))
+  const strongItems = strong.map((finding) => formatSummaryItem(finding, input))
+  const normalItems = normal.map((finding) => formatSummaryItem(finding, input))
 
   const footerLines = []
   if (input.inlineWarning) {

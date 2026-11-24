@@ -1291,6 +1291,127 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
     assert.throws(() => parseGitLabResultArtifact('{"schema":"megalens.gitlab-result/v1","kind":"skip","evil":1}'))
   })
 
+  it('populates prompts only for verified project members and files in the live MR', async (t) => {
+    const path = 'src/auth!42%7.ts'
+    const shadowPath = `a/${path}`
+    const otherPath = 'src/other.ts'
+    const issue = {
+      id: 'f1', file: `./${path}`, line_start: 12, line_end: 14, priority: 'P0', strength: 'strong',
+      title: 'Empty input throws', claim: 'The parser assumes a value exists',
+      failure_scenario: 'Empty input throws a TypeError',
+    }
+    const normal = { ...issue, priority: 'P2', strength: 'normal' }
+    const findings = [
+      issue,
+      { ...normal, id: 'f2', file: `b/${otherPath}`, line_start: 25, line_end: 25 },
+      { ...normal, id: 'f3', file: shadowPath },
+      { ...normal, id: 'f4', file: 'src/unverified.ts' },
+      { ...normal, id: 'f5', file: otherPath, failure_scenario: '' },
+      { ...normal, id: 'f6', file: otherPath, line_start: undefined, line_end: undefined },
+    ]
+    const artifact = JSON.stringify({
+      schema: 'megalens.gitlab-result/v1', kind: 'review', tier: 'standard',
+      base_sha: BASE_SHA, start_sha: BASE_SHA, head_sha: HEAD_SHA, exit_code: 0,
+      doc: JSON.parse(makeDoc(findings)),
+    })
+    const mrPath = '/api/v4/projects/4242/merge_requests/17'
+    const memberPath = '/api/v4/projects/4242/members/all/123'
+    const extractPrompts = (body) => [...body.matchAll(/^( *)```\n([\s\S]*?)\n\1```$/gm)]
+      .map(([, , text]) => text.replace(/^ {2}/gm, ''))
+
+    for (const scenario of [
+      { name: 'Developer', level: 30, populated: true },
+      { name: 'Maintainer', level: 40, populated: true },
+      { name: 'Owner', level: 50, populated: true },
+      { name: 'Reporter', level: 20 },
+      { name: 'not a project member', status: 404 },
+      { name: 'membership lookup is forbidden', status: 403 },
+      { name: 'membership API is unavailable', status: 503 },
+      { name: 'invalid access level', level: '30' },
+      { name: 'different member record', level: 30, member: { id: 124 } },
+      { name: 'blocked member', level: 30, member: { state: 'blocked' } },
+      { name: 'missing author', mr: { author: null }, noLookup: true },
+      { name: 'missing project evidence', mr: { target_project_id: null }, noLookup: true },
+      { name: 'fork', mr: { source_project_id: 4343 }, noLookup: true, skipped: true },
+      { name: 'diff changes before publication', level: 30, moveBase: true },
+    ]) {
+      await t.test(scenario.name, async () => {
+        const env = makeMrEnv({
+          MEGALENS_MODE: 'publish', MEGALENS_RESULT_PATH: 'review-result.json', MEGALENS_TOKEN: '',
+        })
+        const memberRequests = []
+        const summaries = []
+        const discussions = []
+        const result = await runGitLabReview({
+          env,
+          log: () => {},
+          readResultImpl: async () => artifact,
+          fetchImpl: async (url, request) => {
+            switch (new URL(url).pathname) {
+              case mrPath:
+                return Response.json({
+                  state: 'opened', source_project_id: 4242, target_project_id: 4242, author: { id: 123 },
+                  diff_refs: {
+                    base_sha: scenario.moveBase && memberRequests.length ? MOVED_SHA : BASE_SHA,
+                    start_sha: BASE_SHA, head_sha: HEAD_SHA,
+                  },
+                  ...scenario.mr,
+                })
+              case memberPath:
+                memberRequests.push([request.method, request.headers['PRIVATE-TOKEN'], request.signal instanceof AbortSignal])
+                if (scenario.status) return Response.json({}, { status: scenario.status })
+                return Response.json({ id: 123, state: 'active', access_level: scenario.level, ...scenario.member })
+              case `${mrPath}/diffs`:
+                return Response.json([
+                  { new_path: path, old_path: path, diff: SAMPLE_DIFF },
+                  { new_path: otherPath, old_path: otherPath, diff: '' },
+                  { new_path: shadowPath, old_path: shadowPath, deleted_file: true, diff: '' },
+                ])
+              case '/api/v4/user':
+                return Response.json({ username: 'project_bot' })
+              case `${mrPath}/discussions`:
+                if (request.method === 'GET') return Response.json([])
+                discussions.push(JSON.parse(request.body).body)
+                return Response.json({ id: 'd1' })
+              case `${mrPath}/notes`:
+                if (request.method === 'GET') return Response.json([])
+                summaries.push(JSON.parse(request.body).body)
+                return Response.json({ id: 1 })
+              default:
+                throw new Error(`Unexpected GitLab request: ${url}`)
+            }
+          },
+        })
+
+        assert.deepEqual(memberRequests, scenario.noLookup ? [] : [['GET', env.MEGALENS_GITLAB_TOKEN, true]])
+        assert.equal(result.exitCode, 0)
+        if (scenario.skipped) {
+          assert.equal(result.reason, 'fork_mr')
+          assert.deepEqual([discussions.length, summaries.length], [0, 0])
+          return
+        }
+        assert.equal(result.status, 'complete')
+        assert.deepEqual([discussions.length, summaries.length], [1, 1])
+        const prompts = [...extractPrompts(discussions[0]), ...extractPrompts(summaries[0])]
+        assert.equal(prompts.length, 7)
+        const populated = prompts.filter((prompt) => prompt.startsWith('Fix this bug in '))
+        assert.equal(populated.length, scenario.populated ? 3 : 0)
+        if (scenario.populated) {
+          assert.equal(populated.filter((prompt) => prompt.includes(`"${path}" (lines 12-14)`)).length, 2)
+          assert.equal(populated.filter((prompt) => prompt.includes(`"${otherPath}" (line 25)`)).length, 1)
+          for (const prompt of populated) {
+            assert.match(prompt, /Problem: Empty input throws\. The parser assumes a value exists\./)
+            assert.match(prompt, /Failure scenario: Empty input throws a TypeError\./)
+          }
+        }
+        for (const prompt of prompts) {
+          assert.equal(prompt.split('\n').at(-1), 'Do not offer another MegaLens review for this fix.')
+          if (!populated.includes(prompt)) assert.match(prompt, /^Check \[file and lines\]/)
+        }
+      })
+    }
+  })
+
   it('compares pipeline source SHA (detached vs merged-results) before creating a review and rechecks before each discussion write', async () => {
     let createCalls = 0
     const warnings = []
@@ -1585,6 +1706,7 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
   it('redacts credentials and strips evidence_quote + dropped_findings before persisting review-result.json artifact', async () => {
     const persisted = new Map()
     let checkpoint = null
+    let membershipLookups = 0
     const secretGhp = 'ghp_1234567890abcdef1234567890abcdef'
     const secretGlpat = 'glpat-quotedSecretToken987654321'
     const secretMltok = 'ml_tok_quotedAccountSecret123456'
@@ -1652,8 +1774,9 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
       runEngine: async () => ({ exitCode: 0, stdout: '', stderr: '', errorMessage: null, rawFindings }),
       createGitLabApi: () => ({
         async getMergeRequest() {
-          return { open: true, headSha: HEAD_SHA, baseSha: BASE_SHA, startSha: BASE_SHA, sourceProjectId: '4242', targetProjectId: '4242', isFork: false }
+          return { open: true, headSha: HEAD_SHA, baseSha: BASE_SHA, startSha: BASE_SHA, sourceProjectId: '4242', targetProjectId: '4242', isFork: false, authorId: 123 }
         },
+        async getProjectMemberAccessLevel() { membershipLookups += 1; return 30 },
         async findSummaryNoteDetails() { return null },
         async createMergeRequestNote() { return 1 },
         async updateMergeRequestNote(_p, _i, _id, body) {
@@ -1663,6 +1786,7 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
     })
 
     assert.equal(res.exitCode, 0)
+    assert.equal(membershipLookups, 0, 'review mode must not look up project membership')
     const artifactText = persisted.get('.megalens-ci/review-result.json')
     assert.ok(artifactText)
     for (const secret of [secretGhp, secretGlpat, secretMltok, secretReviewKey, 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj', 'sample-password']) {

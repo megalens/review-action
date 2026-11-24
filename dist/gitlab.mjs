@@ -1049,6 +1049,8 @@ function sentenceEnd(text) {
   return /[.…!?]$/.test(text) ? text : `${text}.`
 }
 
+const FIX_PROMPT_END = 'Do not offer another MegaLens review for this fix.'
+
 // Without a verified changed-file path, keep the copyable block independent of the finding.
 const FIX_PROMPT = [
   '<details>',
@@ -1062,6 +1064,7 @@ const FIX_PROMPT = [
   '',
   'Ask for any missing details before editing.',
   'Keep the fix small. Add a regression test and run the relevant tests.',
+  FIX_PROMPT_END,
   '```',
   '',
   '</details>',
@@ -1085,7 +1088,7 @@ function cleanPromptText(value, max, extraSecrets) {
   return clip(redactReviewText(clean, extraSecrets), max - 1)
 }
 
-function formatFixPrompt(finding, extraSecrets, paths) {
+function formatFixPrompt(finding, extraSecrets, paths, requireDetails) {
   const file = finding.file
   if (!file || !paths?.has(file) || redactReviewText(file, extraSecrets) !== file) return FIX_PROMPT
 
@@ -1107,6 +1110,7 @@ function formatFixPrompt(finding, extraSecrets, paths) {
   const scenario = clean(finding.failure_scenario, 300)
   const expected = clean(finding.expected_behavior, 300)
   if (!problem && !scenario) return FIX_PROMPT
+  if (requireDetails && (!location || !problem || !scenario)) return FIX_PROMPT
 
   return [
     '<details>',
@@ -1123,6 +1127,7 @@ function formatFixPrompt(finding, extraSecrets, paths) {
     '---',
     '',
     'Change only what is needed, keep existing behavior, add a regression test, and run the relevant tests.',
+    FIX_PROMPT_END,
     '```',
     '',
     '</details>',
@@ -1134,7 +1139,7 @@ function formatFixPrompt(finding, extraSecrets, paths) {
  * @param {{ id: string, file: string, line_start: number, line_end?: number, title: string, claim?: string, failure_scenario?: string, expected_behavior?: string, priority?: string }} finding
  * @returns {string}
  */
-function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
+function formatInlineComment(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails = false) {
   const priority = sanitizeText(finding.priority || 'P1', 10, { singleLine: true, extraSecrets })
   const title = sanitizeText(finding.title || 'Finding', 200, { singleLine: true, extraSecrets })
   const parts = [`**${priority} (strong): ${title}**`]
@@ -1151,7 +1156,7 @@ function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
 
   parts.push(
     '',
-    formatFixPrompt(finding, extraSecrets, fixPromptPaths),
+    formatFixPrompt(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails),
     '',
     '<sub>MegaLens static review. A second opinion on the diff, not a verdict.</sub>',
     inlineMarker(finding, extraSecrets),
@@ -1159,7 +1164,7 @@ function formatInlineComment(finding, extraSecrets, fixPromptPaths) {
   return parts.join('\n')
 }
 
-function formatSummaryItem(finding, extraSecrets, fixPromptPaths) {
+function formatSummaryItem(finding, { extraSecrets, fixPromptPaths, requireFixPromptDetails }) {
   const options = { singleLine: true, extraSecrets }
   const priority = sanitizeText(finding.priority || 'P2', 10, options)
   const line = finding.line_start ? `:${finding.line_start}` : ''
@@ -1169,7 +1174,7 @@ function formatSummaryItem(finding, extraSecrets, fixPromptPaths) {
   const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 300, options) : ''
   const description = [title, sentenceEnd(claim), sentenceEnd(scenario)].filter(Boolean).join(' ')
   const appNote = finding.alsoFoundByApp ? ' *(also found by the App)*' : ''
-  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths).replace(/^(?=.)/gm, '  ')
+  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails).replace(/^(?=.)/gm, '  ')
   return `- **${priority}**${where}: ${description}${appNote}\n\n${prompt}\n`
 }
 
@@ -1343,8 +1348,8 @@ function formatSummaryComment(input) {
     strongHeader.push(`0 inline strong findings from completed passes; ${normal.length} other finding${normal.length === 1 ? '' : 's'} below.`, '')
   }
 
-  const strongItems = strong.map((finding) => formatSummaryItem(finding, input.extraSecrets, input.fixPromptPaths))
-  const normalItems = normal.map((finding) => formatSummaryItem(finding, input.extraSecrets, input.fixPromptPaths))
+  const strongItems = strong.map((finding) => formatSummaryItem(finding, input))
+  const normalItems = normal.map((finding) => formatSummaryItem(finding, input))
 
   const footerLines = []
   if (input.inlineWarning) {
@@ -2309,21 +2314,19 @@ function buildGitLabDiffMap(mrDiffs) {
 function partitionGitLabFindingsByDiff(findings, mrDiffs, opts = {}) {
   const diffMap = buildGitLabDiffMap(mrDiffs)
   const localMap = normalizeLocalDiffHunks(opts?.localDiffHunks)
-  const knownDiffFiles = new Set([
+  // Keep exact names even without a patch, so a real a/ or b/ directory takes precedence over a diff prefix.
+  const knownFiles = new Set([
     ...diffMap.keys(),
     ...(localMap ? localMap.keys() : []),
-  ])
-  const allMrFiles = new Set(
-    (Array.isArray(mrDiffs) ? mrDiffs : [])
+    ...(Array.isArray(mrDiffs) ? mrDiffs : [])
       .filter((d) => d && typeof d.new_path === 'string')
       .map((d) => d.new_path),
-  )
+  ])
 
   const inDiff = []
   const outOfDiff = []
   const inDiffIndexes = []
 
-  const knownFiles = knownDiffFiles.size > 0 ? knownDiffFiles : allMrFiles
   for (const [index, finding] of findings.entries()) {
     if (!finding || typeof finding.file !== 'string') {
       outOfDiff.push(finding)
@@ -2419,22 +2422,16 @@ function sanitizeGitLabText(text, max, opts = {}) {
 
 /**
  * Apply GLFM-only cross-reference neutralization (`!N`, `$N`, `%N`) to rendered markdown
- * while leaving HTML comment markers (`<!-- megalens... -->`) untouched.
+ * while preserving HTML comment markers and the literal text inside copyable code fences.
  * @param {string} markdown
  * @param {string[]} [extraSecrets]
  * @returns {string}
  */
 function finalizeGitLabMarkdown(markdown, extraSecrets = []) {
-  const neutralized = markdown
-    .split(/(<!--[\s\S]*?-->)/g)
-    .map((chunk) => {
-      if (chunk.startsWith('<!--') && chunk.endsWith('-->')) return chunk
-      return chunk
-        .replace(/!(?=\d)/g, '!\u200b')
-        .replace(/\$(?=\d)/g, '$\u200b')
-        .replace(/%(?=\d)/g, '%\u200b')
-    })
-    .join('')
+  const neutralized = markdown.replace(
+    /<!--[\s\S]*?-->|^ *```\n[\s\S]*?\n *```$|[!$%](?=\d)/gm,
+    (match) => match.length === 1 ? `${match}\u200b` : match,
+  )
   return extraSecrets.length > 0 ? redactSecrets(neutralized, extraSecrets) : neutralized
 }
 
@@ -2443,11 +2440,14 @@ function finalizeGitLabMarkdown(markdown, extraSecrets = []) {
  * Same low-noise structure and dedup marker as the GitHub Action.
  *
  * @param {{ id?: string, file: string, line_start: number, line_end?: number, title: string, claim?: string, failure_scenario?: string, priority?: string }} finding
- * @param {{ extraSecrets?: string[] }} [opts]
+ * @param {{ extraSecrets?: string[], fixPromptPaths?: Set<string> }} [opts]
  * @returns {string}
  */
 function formatGitLabInlineNote(finding, opts = {}) {
-  return finalizeGitLabMarkdown(formatInlineComment(finding, opts.extraSecrets), opts.extraSecrets)
+  return finalizeGitLabMarkdown(
+    formatInlineComment(finding, opts.extraSecrets, opts.fixPromptPaths, true),
+    opts.extraSecrets,
+  )
 }
 
 /**
@@ -2463,7 +2463,7 @@ function formatGitLabSummaryNote(input) {
     ? 0
     : input.gateStrongCount ?? input.strongFindings?.length ?? 0
   return finalizeGitLabMarkdown(
-    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER }),
+    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER, requireFixPromptDetails: true }),
     input?.extraSecrets,
   )
 }
@@ -2491,6 +2491,7 @@ function formatGitLabTooLargeNote(input) {
 
 // ─── src/gitlab-api.js ───
 const DEFAULT_GITLAB_API_URL = 'https://gitlab.com/api/v4'
+const GITLAB_MEMBERSHIP_TIMEOUT_MS = 5_000
 
 class GitLabApiError extends Error {
   /**
@@ -2553,10 +2554,11 @@ function createGitLabApi(token, opts = {}) {
   /** @type {Promise<string | null> | null} */
   let cachedUsernamePromise = null
 
-  async function call(method, path, body) {
+  async function call(method, path, body, signal) {
     const res = await fetchImpl(`${baseUrl}${path}`, {
       method,
       redirect: 'error',
+      ...(signal ? { signal } : {}),
       headers: {
         'PRIVATE-TOKEN': cleanToken,
         Accept: 'application/json',
@@ -2689,6 +2691,7 @@ function createGitLabApi(token, opts = {}) {
       }
       const sourceProjectId = data?.source_project_id != null ? String(data.source_project_id) : null
       const targetProjectId = data?.target_project_id != null ? String(data.target_project_id) : null
+      const authorId = data?.author?.id
       return {
         iid: Number(mrIid),
         open: data.state === 'opened',
@@ -2698,8 +2701,22 @@ function createGitLabApi(token, opts = {}) {
         startSha,
         sourceProjectId,
         targetProjectId,
+        authorId: Number.isSafeInteger(authorId) && authorId > 0 ? authorId : null,
         isFork: Boolean(sourceProjectId && targetProjectId && sourceProjectId !== targetProjectId),
       }
+    },
+
+    async getProjectMemberAccessLevel(projectId, userId) {
+      const res = await call(
+        'GET',
+        `${projectPath(projectId)}/members/all/${encodeURIComponent(String(userId))}`,
+        undefined,
+        AbortSignal.timeout(GITLAB_MEMBERSHIP_TIMEOUT_MS),
+      )
+      if (!res.ok) return fail(res, 'read project membership')
+      const member = await res.json()
+      if (member?.id !== userId || member?.state !== 'active') return null
+      return Number.isSafeInteger(member.access_level) ? member.access_level : null
     },
 
     async listMergeRequestDiffs(projectId, mrIid, maxPages = 30) {
@@ -2791,6 +2808,7 @@ function createGitLabApi(token, opts = {}) {
 const GITLAB_VALID_TIERS = new Set(['standard', 'double', 'deep'])
 const GITLAB_VALID_FAIL_ON = new Set(['none', 'strong'])
 const GITLAB_VALID_MODES = new Set(['full', 'review', 'publish'])
+const GITLAB_DEVELOPER_ACCESS_LEVEL = 30
 const GITLAB_SHA_RE = /^[0-9a-f]{40,64}$/i
 const GITLAB_REPO_RE = /^[A-Za-z0-9._/@:+\[\]-]{1,200}$/
 const GITLAB_RESULT_SCHEMA = 'megalens.gitlab-result/v1'
@@ -4076,10 +4094,9 @@ async function publishGitLabReview({
 }) {
   const effectiveTier = cfg.mode === 'publish' ? selectedTier : (doc?.tier || selectedTier)
 
-  // Re-read live MR head right before EVERY write so stale runs never overwrite newer commits.
-  const isStaleHead = async () => {
-    if (typeof api.getMergeRequest !== 'function') return false
-    const live = await api.getMergeRequest(cfg.projectId, cfg.mrIid)
+  // Read the live MR before every write to check freshness and prompt eligibility.
+  const readMergeRequest = () => api.getMergeRequest(cfg.projectId, cfg.mrIid)
+  const isStaleHead = (live) => {
     if (live?.headSha && live.headSha.toLowerCase() !== headSha) {
       safeWarn(
         `MegaLens: MR head moved from ${headSha.slice(0, 7)} to ${live.headSha.slice(0, 7)}; nothing written for this run.`,
@@ -4092,9 +4109,10 @@ async function publishGitLabReview({
   const upsertSummaryNote = async (buildBody, tierForMarker) => {
     const marker = summaryMarker(tierForMarker)
     const existingId = await api.findSummaryNote(cfg.projectId, cfg.mrIid, marker)
-    if (await isStaleHead()) return { action: 'skipped_stale' }
+    const live = await readMergeRequest()
+    if (isStaleHead(live)) return { action: 'skipped_stale' }
     // Timestamp the summary right at publication time so long reviews still protect immediately queued duplicates.
-    const body = typeof buildBody === 'function' ? buildBody(getNowMs()) : buildBody
+    const body = typeof buildBody === 'function' ? buildBody(getNowMs(), live) : buildBody
     if (existingId !== null) {
       await api.updateMergeRequestNote(cfg.projectId, cfg.mrIid, existingId, body)
       return { action: 'updated', noteId: existingId }
@@ -4147,7 +4165,8 @@ async function publishGitLabReview({
     return { status: 'failed', reviewId: doc.review_id || reviewId, exitCode: 1, error: mismatchMsg }
   }
 
-  if (await isStaleHead()) {
+  const mr = await readMergeRequest()
+  if (isStaleHead(mr)) {
     return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
   }
 
@@ -4199,6 +4218,32 @@ async function publishGitLabReview({
     }
   }
 
+  // Only live, same-project diff metadata can authorize a populated prompt.
+  const eligibleAuthorId = (live) => (
+    live?.open && !live.isFork
+    && live.sourceProjectId === cfg.projectId && live.targetProjectId === cfg.projectId
+    && live.headSha?.toLowerCase() === headSha && live.baseSha?.toLowerCase() === baseSha
+    && (live.startSha || live.baseSha)?.toLowerCase() === startSha
+    && Number.isSafeInteger(live.authorId) && live.authorId > 0 ? live.authorId : null
+  )
+  const fixPromptPaths = new Set(mrDiffs
+    .filter((diff) => typeof diff?.new_path === 'string' && diff.new_path.trim() && diff.deleted_file !== true)
+    .map((diff) => diff.new_path))
+  let verifiedAuthorId = null
+  const authorId = eligibleAuthorId(mr)
+  if (authorId !== null && fixPromptPaths.size > 0 && effectiveDoc.findings.length > 0
+    && typeof api.getProjectMemberAccessLevel === 'function') {
+    try {
+      const level = await api.getProjectMemberAccessLevel(cfg.projectId, authorId)
+      if (level >= GITLAB_DEVELOPER_ACCESS_LEVEL) verifiedAuthorId = authorId
+    } catch {
+      // Membership lookup is optional for publication. Keep the fill-in template on failure.
+    }
+  }
+  const promptPaths = (live) => (
+    verifiedAuthorId !== null && eligibleAuthorId(live) === verifiedAuthorId ? fixPromptPaths : undefined
+  )
+
   const isGatewayRefused = doc.refused === true || engineExitCode === 3
   const summaryErrorMessage = isGatewayRefused
     ? 'Refused by the MegaLens gateway (check token, quota, or spend cap).'
@@ -4228,11 +4273,16 @@ async function publishGitLabReview({
   let lastInlineErr = ''
   if (plan.inlineDiscussions.length > 0) {
     for (const item of plan.inlineDiscussions) {
-      if (await isStaleHead()) {
+      const live = await readMergeRequest()
+      if (isStaleHead(live)) {
         return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
       }
       try {
-        await api.createMergeRequestDiscussion(cfg.projectId, cfg.mrIid, item.body, item.position)
+        const paths = promptPaths(live)
+        const body = paths
+          ? formatGitLabInlineNote(item.finding, { extraSecrets: runtimeSecrets, fixPromptPaths: paths })
+          : item.body
+        await api.createMergeRequestDiscussion(cfg.projectId, cfg.mrIid, body, item.position)
         inlinePostedCount += 1
       } catch (err) {
         inlineFailedCount += 1
@@ -4246,7 +4296,7 @@ async function publishGitLabReview({
     : null
 
   const upsertRes = await upsertSummaryNote(
-    (pubNow) =>
+    (pubNow, live) =>
       formatGitLabSummaryNote({
         headSha,
         doc: effectiveDoc,
@@ -4258,6 +4308,7 @@ async function publishGitLabReview({
         tierWarning,
         errorMessage: summaryErrorMessage,
         extraSecrets: runtimeSecrets,
+        fixPromptPaths: promptPaths(live),
         now: pubNow,
       }),
     effectiveTier,

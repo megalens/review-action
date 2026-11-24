@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.2
+
+* GitHub and GitLab fix prompts now end with “Do not offer another MegaLens review for this fix.”
+* The GitLab CI component posts review findings on merge requests. When GitLab confirms that the merge request is within one project and that the author has Developer access or higher, the runner can fill in the fix prompt with the verified file, line range, problem and failure scenario. If verification fails or any detail is missing, it uses a template you can fill in.
+
 ## v1.3.1
 
 - **Node 24 runtime:** the action now runs on `node24`, so GitHub no longer shows the Node.js 20 deprecation warning.

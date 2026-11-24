@@ -46,6 +46,7 @@ import { errorText, redactSecrets } from './redact.js'
 const GITLAB_VALID_TIERS = new Set(['standard', 'double', 'deep'])
 const GITLAB_VALID_FAIL_ON = new Set(['none', 'strong'])
 const GITLAB_VALID_MODES = new Set(['full', 'review', 'publish'])
+const GITLAB_DEVELOPER_ACCESS_LEVEL = 30
 const GITLAB_SHA_RE = /^[0-9a-f]{40,64}$/i
 const GITLAB_REPO_RE = /^[A-Za-z0-9._/@:+\[\]-]{1,200}$/
 const GITLAB_RESULT_SCHEMA = 'megalens.gitlab-result/v1'
@@ -1331,10 +1332,9 @@ async function publishGitLabReview({
 }) {
   const effectiveTier = cfg.mode === 'publish' ? selectedTier : (doc?.tier || selectedTier)
 
-  // Re-read live MR head right before EVERY write so stale runs never overwrite newer commits.
-  const isStaleHead = async () => {
-    if (typeof api.getMergeRequest !== 'function') return false
-    const live = await api.getMergeRequest(cfg.projectId, cfg.mrIid)
+  // Read the live MR before every write to check freshness and prompt eligibility.
+  const readMergeRequest = () => api.getMergeRequest(cfg.projectId, cfg.mrIid)
+  const isStaleHead = (live) => {
     if (live?.headSha && live.headSha.toLowerCase() !== headSha) {
       safeWarn(
         `MegaLens: MR head moved from ${headSha.slice(0, 7)} to ${live.headSha.slice(0, 7)}; nothing written for this run.`,
@@ -1347,9 +1347,10 @@ async function publishGitLabReview({
   const upsertSummaryNote = async (buildBody, tierForMarker) => {
     const marker = summaryMarker(tierForMarker)
     const existingId = await api.findSummaryNote(cfg.projectId, cfg.mrIid, marker)
-    if (await isStaleHead()) return { action: 'skipped_stale' }
+    const live = await readMergeRequest()
+    if (isStaleHead(live)) return { action: 'skipped_stale' }
     // Timestamp the summary right at publication time so long reviews still protect immediately queued duplicates.
-    const body = typeof buildBody === 'function' ? buildBody(getNowMs()) : buildBody
+    const body = typeof buildBody === 'function' ? buildBody(getNowMs(), live) : buildBody
     if (existingId !== null) {
       await api.updateMergeRequestNote(cfg.projectId, cfg.mrIid, existingId, body)
       return { action: 'updated', noteId: existingId }
@@ -1402,7 +1403,8 @@ async function publishGitLabReview({
     return { status: 'failed', reviewId: doc.review_id || reviewId, exitCode: 1, error: mismatchMsg }
   }
 
-  if (await isStaleHead()) {
+  const mr = await readMergeRequest()
+  if (isStaleHead(mr)) {
     return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
   }
 
@@ -1454,6 +1456,32 @@ async function publishGitLabReview({
     }
   }
 
+  // Only live, same-project diff metadata can authorize a populated prompt.
+  const eligibleAuthorId = (live) => (
+    live?.open && !live.isFork
+    && live.sourceProjectId === cfg.projectId && live.targetProjectId === cfg.projectId
+    && live.headSha?.toLowerCase() === headSha && live.baseSha?.toLowerCase() === baseSha
+    && (live.startSha || live.baseSha)?.toLowerCase() === startSha
+    && Number.isSafeInteger(live.authorId) && live.authorId > 0 ? live.authorId : null
+  )
+  const fixPromptPaths = new Set(mrDiffs
+    .filter((diff) => typeof diff?.new_path === 'string' && diff.new_path.trim() && diff.deleted_file !== true)
+    .map((diff) => diff.new_path))
+  let verifiedAuthorId = null
+  const authorId = eligibleAuthorId(mr)
+  if (authorId !== null && fixPromptPaths.size > 0 && effectiveDoc.findings.length > 0
+    && typeof api.getProjectMemberAccessLevel === 'function') {
+    try {
+      const level = await api.getProjectMemberAccessLevel(cfg.projectId, authorId)
+      if (level >= GITLAB_DEVELOPER_ACCESS_LEVEL) verifiedAuthorId = authorId
+    } catch {
+      // Membership lookup is optional for publication. Keep the fill-in template on failure.
+    }
+  }
+  const promptPaths = (live) => (
+    verifiedAuthorId !== null && eligibleAuthorId(live) === verifiedAuthorId ? fixPromptPaths : undefined
+  )
+
   const isGatewayRefused = doc.refused === true || engineExitCode === 3
   const summaryErrorMessage = isGatewayRefused
     ? 'Refused by the MegaLens gateway (check token, quota, or spend cap).'
@@ -1483,11 +1511,16 @@ async function publishGitLabReview({
   let lastInlineErr = ''
   if (plan.inlineDiscussions.length > 0) {
     for (const item of plan.inlineDiscussions) {
-      if (await isStaleHead()) {
+      const live = await readMergeRequest()
+      if (isStaleHead(live)) {
         return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
       }
       try {
-        await api.createMergeRequestDiscussion(cfg.projectId, cfg.mrIid, item.body, item.position)
+        const paths = promptPaths(live)
+        const body = paths
+          ? formatGitLabInlineNote(item.finding, { extraSecrets: runtimeSecrets, fixPromptPaths: paths })
+          : item.body
+        await api.createMergeRequestDiscussion(cfg.projectId, cfg.mrIid, body, item.position)
         inlinePostedCount += 1
       } catch (err) {
         inlineFailedCount += 1
@@ -1501,7 +1534,7 @@ async function publishGitLabReview({
     : null
 
   const upsertRes = await upsertSummaryNote(
-    (pubNow) =>
+    (pubNow, live) =>
       formatGitLabSummaryNote({
         headSha,
         doc: effectiveDoc,
@@ -1513,6 +1546,7 @@ async function publishGitLabReview({
         tierWarning,
         errorMessage: summaryErrorMessage,
         extraSecrets: runtimeSecrets,
+        fixPromptPaths: promptPaths(live),
         now: pubNow,
       }),
     effectiveTier,
