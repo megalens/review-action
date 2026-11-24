@@ -3,6 +3,7 @@
 ## v1.3.1
 
 - **Node 24 runtime:** the action now runs on `node24`, so GitHub no longer shows the Node.js 20 deprecation warning.
+- **Engine pin:** Pinned `megalens-review` `0.1.8` (follow-up review mode, PR chat answer polish, suggested-fix writer, GitLab token redaction; all off unless MegaLens enables them).
 
 ## v1.3.0
 

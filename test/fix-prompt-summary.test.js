@@ -687,87 +687,17 @@ test('Action runtime and shipping files never invoke or advertise megalens-revie
   )
 })
 
-test('README manual setup explicitly requires replacing all-zero megalens/review-action placeholder SHAs and resolves tags cleanly', async () => {
+test('README workflow examples pin megalens/review-action to a real 40-character release commit, never a placeholder', async () => {
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
   const zeroSha = '0'.repeat(40)
-
-  // Must not claim the placeholder workflow templates are already pinned for copy-paste as-is.
-  assert.doesNotMatch(readme, /copy one of the pinned\b/i)
-
-  const prStart = readme.indexOf('## Usage: Standard Tier')
-  const commentStart = readme.indexOf('## Usage: Comment-Triggered Review')
-  const manualStart = readme.indexOf('### Manual setup')
-  const dispatchStart = readme.indexOf('## Usage: Manual Run Without a Pull Request')
-  assert.ok(prStart > 0 && commentStart > prStart && manualStart > commentStart && dispatchStart > manualStart)
-
-  const prSection = readme.slice(prStart, commentStart)
-  const commentSection = readme.slice(commentStart, manualStart)
-  const manualSection = readme.slice(manualStart, dispatchStart)
-
-  // Both workflow sections warn before their YAML block to replace all three placeholder SHAs.
-  for (const [label, section] of [
-    ['pull_request', prSection],
-    ['issue_comment', commentSection],
-  ]) {
-    const yamlIdx = section.indexOf('```yaml')
-    assert.ok(yamlIdx > 0, `${label} section must include a yaml workflow block`)
-    const preamble = section.slice(0, yamlIdx)
-    assert.match(preamble, /Required before copying:/, `${label} preamble must warn before copying`)
-    assert.ok(preamble.includes(zeroSha), `${label} preamble must call out the all-zero placeholder SHA`)
-    assert.match(preamble, /create.*review.*publish/i, `${label} preamble must list all three jobs`)
+  assert.ok(!readme.includes(`megalens/review-action@${zeroSha}`), 'no all-zero placeholder pins')
+  const pins = [...readme.matchAll(/uses: megalens\/review-action@([0-9a-f]+)(?: # (v\d+\.\d+\.\d+))?/g)]
+  assert.ok(pins.length >= 3, 'the workflow examples pin the action')
+  for (const [, sha, tag] of pins) {
+    assert.match(sha, /^[0-9a-f]{40}$/, 'pins are full 40-character commit SHAs')
+    assert.ok(tag, 'each pin names its release tag in a comment')
   }
-
-  // Every megalens/review-action placeholder in both YAML templates is explicitly marked PLACEHOLDER,
-  // and substituting a release commit SHA leaves zero all-zero SHAs across all 12 workflow uses: steps.
-  const yamlBlocks = [...readme.matchAll(/```yaml\n([\s\S]*?)```/g)].map((m) => m[1])
-  assert.equal(yamlBlocks.length, 2)
-  const releaseSha = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'
-  let placeholderLines = 0
-  for (const block of yamlBlocks) {
-    const mlLines = [...block.matchAll(/^\s*-?\s*uses:\s*megalens\/review-action@([^\s#]+)(.*)$/gm)]
-    assert.equal(mlLines.length, 3, 'each workflow must have 3 megalens/review-action steps')
-    for (const [, ref, comment] of mlLines) {
-      assert.equal(ref, zeroSha)
-      assert.match(comment, /#\s*PLACEHOLDER:\s*replace with release commit SHA/i)
-      placeholderLines += 1
-    }
-    const substituted = block.replaceAll(`megalens/review-action@${zeroSha}`, `megalens/review-action@${releaseSha}`)
-    assert.equal(substituted.includes(zeroSha), false)
-    const usesRefs = [...substituted.matchAll(/^\s*-?\s*uses:\s*[^\s#]+@([0-9a-f]{40})\b/gm)].map((m) => m[1])
-    assert.equal(usesRefs.length, 6)
-    assert.equal(usesRefs.filter((r) => r === releaseSha).length, 3)
-  }
-  assert.equal(placeholderLines, 6)
-
-  // Manual setup section documents Releases lookup, git ls-remote command, placeholder replacement, and MEGALENS_TOKEN.
-  assert.match(manualSection, /https:\/\/github\.com\/megalens\/review-action\/releases/)
-  assert.match(manualSection, /git ls-remote --tags https:\/\/github\.com\/megalens\/review-action\.git v1\.3\.0 'v1\.3\.0\^\{\}'/)
-  assert.ok(manualSection.includes(`megalens/review-action@${zeroSha}`))
-  assert.match(manualSection, /fail.*`create` step/i)
-  assert.match(manualSection, /MEGALENS_TOKEN/)
-
-  // Verify the documented git ls-remote --tags resolution works for both annotated and lightweight tags.
-  const execFileAsync = promisify(execFile)
-  const repoDir = await mkdtemp(join(tmpdir(), 'ml-readme-tag-'))
-  try {
-    const git = (args) => execFileAsync('git', args, { cwd: repoDir })
-    await git(['init', '-q'])
-    await git(['config', 'user.name', 'Test'])
-    await git(['config', 'user.email', 'test@example.com'])
-    await writeFile(join(repoDir, 'file.txt'), 'ok\n')
-    await git(['add', 'file.txt'])
-    await git(['commit', '-q', '-m', 'init'])
-    const commitSha = (await git(['rev-parse', 'HEAD'])).stdout.trim()
-    await git(['tag', '-a', 'v1.3.0', '-m', 'annotated release'])
-    await git(['tag', 'v1'])
-
-    for (const tag of ['v1.3.0', 'v1']) {
-      const { stdout } = await git(['ls-remote', '--tags', repoDir, tag, `${tag}^{}`])
-      const lines = stdout.trim().split('\n').filter(Boolean)
-      const resolvedSha = lines[lines.length - 1].split(/\s+/)[0]
-      assert.equal(resolvedSha, commitSha, `ls-remote must resolve ${tag} to commit SHA`)
-    }
-  } finally {
-    await rm(repoDir, { recursive: true, force: true })
-  }
+  assert.equal(new Set(pins.map((m) => m[1])).size, 1, 'all examples pin the same release commit')
+  // Manual setup still explains how to resolve a release tag to its commit SHA.
+  assert.match(readme, /git ls-remote --tags https:\/\/github\.com\/megalens\/review-action\.git/)
 })

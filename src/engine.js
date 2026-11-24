@@ -16,7 +16,7 @@ export const BYO_DISABLED_MESSAGE = 'BYO OpenAI key mode is not available yet; u
 export const DOUBLE_TIER_ENABLED = false
 export const DOUBLE_DISABLED_MESSAGE = 'The Double tier is not available yet; use standard or deep.'
 
-export const PINNED_ENGINE_VERSION = '0.1.5'
+export const PINNED_ENGINE_VERSION = '0.1.8'
 // dist.integrity of megalens-review@0.1.0 as published on npm (21 Nov 2026). A tarball that does not match is refused.
 export const PINNED_ENGINE_INTEGRITY = Object.freeze({
   '0.1.0': 'sha512-u96ufJHpgP/AYbaA3pgMtS/q+WAvTJ0wCK+GZ5CvTHDUa+WFyEyVnGeYm82VJ5lv+jTSt2etW08280OXFOhQHg==',
@@ -25,6 +25,8 @@ export const PINNED_ENGINE_INTEGRITY = Object.freeze({
   '0.1.2': 'sha512-zC5W3zmErpSU9GXNngUSGp77fVaqDh4hQDZgPAcxnt7v/37osclGQz8/ApR0ROBu6clN19xRDnCZd2GTDivQ0g==',
   '0.1.3': 'sha512-bgdgfD/atIa8A19BoAxL1UtzHCm2+oDHhrGhgywxjwguBDgACOEzyoBGDR8euyh1VqO4UjrkYtEMAUPvsqBhFw==',
   '0.1.5': 'sha512-Yvx6D6UzmfspHm4mGKpueFhu/G5bmSnLRG9NgnJHnZvlfF0yd0evwUmqIcQaPD3IKHRmVWXKU6qVPRWMOOJ67w==',
+  // 0.1.8: follow-up review mode, PR chat answer polish, suggested-fix writer, GitLab token redaction (published 24 Nov 2026).
+  '0.1.8': 'sha512-yvlqmemmvFZyr6aE9EwXojLFwiMJq1dVkkIAYL4TS0YIj5Imqpns7EyrswzCt/0szLbE4pvM0NFoUyziL0eLBg==',
 })
 
 /**
