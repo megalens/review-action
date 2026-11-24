@@ -20,7 +20,7 @@ import {
   parseFindingsDocument,
   sortFindings,
 } from './findings.js'
-import { createGitLabApi, DEFAULT_GITLAB_API_URL, normalizeGitLabApiUrl } from './gitlab-api.js'
+import { createGitLabApi, DEFAULT_GITLAB_API_URL, GitLabApiError, normalizeGitLabApiUrl } from './gitlab-api.js'
 import {
   buildGitLabPosition,
   normalizeLocalDiffHunks,
@@ -1353,10 +1353,10 @@ async function publishGitLabReview({
     const body = typeof buildBody === 'function' ? buildBody(getNowMs(), live) : buildBody
     if (existingId !== null) {
       await api.updateMergeRequestNote(cfg.projectId, cfg.mrIid, existingId, body)
-      return { action: 'updated', noteId: existingId }
+      return { action: 'updated', noteId: existingId, body }
     }
     const createdId = await api.createMergeRequestNote(cfg.projectId, cfg.mrIid, body)
-    return { action: 'created', noteId: createdId }
+    return { action: 'created', noteId: createdId, body }
   }
 
   if (!doc) {
@@ -1457,31 +1457,53 @@ async function publishGitLabReview({
   }
 
   // Only live, same-project diff metadata can authorize a populated prompt.
-  const eligibleAuthorId = (live) => (
-    live?.open && !live.isFork
-    && live.sourceProjectId === cfg.projectId && live.targetProjectId === cfg.projectId
-    && live.headSha?.toLowerCase() === headSha && live.baseSha?.toLowerCase() === baseSha
-    && (live.startSha || live.baseSha)?.toLowerCase() === startSha
-    && Number.isSafeInteger(live.authorId) && live.authorId > 0 ? live.authorId : null
-  )
+  const mrPromptFallbackReason = (live) => {
+    if (!live?.open) return 'merge request is no longer open'
+    if (live.isFork || live.sourceProjectId !== cfg.projectId || live.targetProjectId !== cfg.projectId) {
+      return 'merge request project could not be verified'
+    }
+    if (live.headSha?.toLowerCase() !== headSha || live.baseSha?.toLowerCase() !== baseSha
+      || (live.startSha || live.baseSha)?.toLowerCase() !== startSha) {
+      return 'merge request diff refs changed'
+    }
+    if (!Number.isSafeInteger(live.authorId) || live.authorId <= 0) {
+      return 'merge request author could not be verified'
+    }
+    return null
+  }
   const fixPromptPaths = new Set(mrDiffs
     .filter((diff) => typeof diff?.new_path === 'string' && diff.new_path.trim() && diff.deleted_file !== true)
     .map((diff) => diff.new_path))
   let verifiedAuthorId = null
-  const authorId = eligibleAuthorId(mr)
-  if (authorId !== null && fixPromptPaths.size > 0 && effectiveDoc.findings.length > 0
-    && typeof api.getProjectMemberAccessLevel === 'function') {
-    try {
-      const level = await api.getProjectMemberAccessLevel(cfg.projectId, authorId)
-      if (level >= GITLAB_DEVELOPER_ACCESS_LEVEL) verifiedAuthorId = authorId
-    } catch {
-      // Membership lookup is optional for publication. Keep the fill-in template on failure.
+  let fixPromptFallbackReason = 'no publishable findings'
+  if (effectiveStatus !== 'failed' && effectiveDoc.findings.length > 0) {
+    fixPromptFallbackReason = mrPromptFallbackReason(mr)
+    if (!fixPromptFallbackReason) {
+      if (fixPromptPaths.size === 0) {
+        fixPromptFallbackReason = 'no verified diff paths'
+      } else if (typeof api.getProjectMemberAccessLevel !== 'function') {
+        fixPromptFallbackReason = 'membership lookup unavailable'
+      } else {
+        try {
+          const level = await api.getProjectMemberAccessLevel(cfg.projectId, mr.authorId)
+          if (level >= GITLAB_DEVELOPER_ACCESS_LEVEL) {
+            verifiedAuthorId = mr.authorId
+          } else {
+            fixPromptFallbackReason = level == null
+              ? 'author membership could not be verified'
+              : 'author access level below Developer'
+          }
+        } catch (err) {
+          // GitLab response text and network errors can contain credentials or identifying data.
+          fixPromptFallbackReason = err instanceof GitLabApiError && Number.isInteger(err.status)
+            ? `membership request failed with HTTP ${err.status}`
+            : err?.name === 'TimeoutError'
+              ? 'membership request timed out'
+              : 'membership request failed'
+        }
+      }
     }
   }
-  const promptPaths = (live) => (
-    verifiedAuthorId !== null && eligibleAuthorId(live) === verifiedAuthorId ? fixPromptPaths : undefined
-  )
-
   const isGatewayRefused = doc.refused === true || engineExitCode === 3
   const summaryErrorMessage = isGatewayRefused
     ? 'Refused by the MegaLens gateway (check token, quota, or spend cap).'
@@ -1504,11 +1526,25 @@ async function publishGitLabReview({
     extraSecrets: runtimeSecrets,
     now: getNowMs(),
   })
+  const hasVerifiedPath = (finding) => fixPromptPaths.has(finding.file)
+  const findingFallbackReason = plan.strongFindings.some(hasVerifiedPath) || plan.normalFindings.some(hasVerifiedPath)
+    ? 'finding did not meet fix prompt requirements'
+    : 'no finding matched a verified diff path'
+  const promptPaths = (live) => {
+    if (verifiedAuthorId === null) return undefined
+    const reason = mrPromptFallbackReason(live)
+      ?? (live.authorId !== verifiedAuthorId ? 'merge request author changed' : null)
+    fixPromptFallbackReason = reason ?? findingFallbackReason
+    return reason ? undefined : fixPromptPaths
+  }
 
   // Step 3: Post inline discussions for strong findings, rechecking freshness BEFORE EACH write.
   let inlinePostedCount = plan.alreadyPostedCount
   let inlineFailedCount = 0
   let lastInlineErr = ''
+  let readyFixPromptPosted = false
+  // Finding prose is sanitized before rendering and cannot introduce a code fence.
+  const hasReadyFixPrompt = (body) => /^ *```\n *Fix this bug in "/m.test(body)
   if (plan.inlineDiscussions.length > 0) {
     for (const item of plan.inlineDiscussions) {
       const live = await readMergeRequest()
@@ -1521,6 +1557,7 @@ async function publishGitLabReview({
           ? formatGitLabInlineNote(item.finding, { extraSecrets: runtimeSecrets, fixPromptPaths: paths })
           : item.body
         await api.createMergeRequestDiscussion(cfg.projectId, cfg.mrIid, body, item.position)
+        readyFixPromptPosted ||= Boolean(paths) && hasReadyFixPrompt(body)
         inlinePostedCount += 1
       } catch (err) {
         inlineFailedCount += 1
@@ -1553,6 +1590,11 @@ async function publishGitLabReview({
   )
   if (upsertRes.action === 'skipped_stale') {
     return { status: 'skipped', reason: 'stale_head', exitCode: 0 }
+  }
+  if (cfg.mode === 'publish') {
+    safeLog(readyFixPromptPosted || hasReadyFixPrompt(upsertRes.body)
+      ? 'fix prompt: ready-to-paste'
+      : `fix prompt: fill-in (${fixPromptFallbackReason})`)
   }
 
   const strongCount = plan.strongFindings.length

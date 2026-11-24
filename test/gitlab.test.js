@@ -1412,6 +1412,109 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
     }
   })
 
+  it('publishes the expected fix prompts and logs the decision for the captured GitLab MR', async (t) => {
+    // Capture only the API fields needed for the replay, with the original diff and refs.
+    const { mergeRequest: mr, diffs, member } = JSON.parse(readFileSync(
+      join(ROOT, 'test', 'fixtures', 'gitlab-live-mr2.json'), 'utf8',
+    ))
+    const { base_sha: base, head_sha: head } = mr.diff_refs
+    const mrPath = `/api/v4/projects/${mr.project_id}/merge_requests/${mr.iid}`
+    const memberPath = `/api/v4/projects/${mr.project_id}/members/all/${mr.author.id}`
+
+    for (const scenario of [
+      { name: 'Owner with a complete finding', log: 'ready-to-paste', populated: true },
+      { name: 'Owner with inline discussions disabled', log: 'ready-to-paste', populated: true, summaryOnly: true },
+      { name: 'Owner without a failure scenario', log: 'fill-in (finding did not meet fix prompt requirements)', omitScenario: true },
+      { name: 'Owner without a verified finding path', log: 'fill-in (no finding matched a verified diff path)', unmatchedPath: true },
+      { name: 'posting credential denied member access', log: 'fill-in (membership request failed with HTTP 403)', memberStatus: 403 },
+      { name: 'diff refs change after membership lookup', log: 'fill-in (merge request diff refs changed)', moveBase: true },
+    ]) {
+      await t.test(scenario.name, async (t) => {
+        const projectDir = mkdtempSync(join(tmpdir(), 'megalens-live-mr-'))
+        t.after(() => rmSync(projectDir, { recursive: true, force: true }))
+        const env = makeMrEnv({
+          CI_PROJECT_DIR: projectDir,
+          CI_PROJECT_ID: String(mr.project_id),
+          CI_MERGE_REQUEST_SOURCE_PROJECT_ID: String(mr.source_project_id),
+          CI_MERGE_REQUEST_PROJECT_ID: String(mr.target_project_id),
+          CI_MERGE_REQUEST_IID: String(mr.iid),
+          CI_MERGE_REQUEST_DIFF_BASE_SHA: base,
+          CI_COMMIT_SHA: head,
+          MEGALENS_MODE: 'publish',
+          MEGALENS_INLINE: scenario.summaryOnly ? 'false' : 'true',
+          MEGALENS_RESULT_PATH: 'review-result.json',
+          MEGALENS_TOKEN: '',
+        })
+        const file = scenario.unmatchedPath ? 'src/unmatched.js' : diffs[0].new_path
+        const finding = {
+          id: 'discount', file, line_start: 4, title: 'Positive discounts increase the price',
+          claim: 'Adding the percentage raises the total.', priority: 'P1', strength: 'strong',
+          ...(scenario.omitScenario ? {} : { failure_scenario: 'A positive discount increases the amount charged.' }),
+        }
+        await writeResultArtifactSafely(env.MEGALENS_RESULT_PATH, JSON.stringify({
+          schema: 'megalens.gitlab-result/v1', kind: 'review', tier: 'standard',
+          ...mr.diff_refs, exit_code: 0,
+          doc: JSON.parse(makeDoc([finding], { target: { kind: 'range', base, head } })),
+        }), projectDir)
+
+        const requests = []
+        const logs = []
+        const posts = []
+        const result = await runGitLabReview({
+          env,
+          log: (line) => logs.push(line),
+          fetchImpl: async (url, request) => {
+            assert.ok(request.headers['PRIVATE-TOKEN'] === env.MEGALENS_GITLAB_TOKEN)
+            const { pathname } = new URL(url)
+            requests.push(`${request.method} ${pathname}`)
+            switch (pathname) {
+              case mrPath:
+                return Response.json(scenario.moveBase && requests.includes(`GET ${memberPath}`)
+                  ? { ...mr, diff_refs: { ...mr.diff_refs, base_sha: MOVED_SHA } }
+                  : mr)
+              case `${mrPath}/diffs`:
+                return Response.json(diffs)
+              case memberPath:
+                assert.ok(request.signal instanceof AbortSignal)
+                return scenario.memberStatus
+                  ? Response.json({ message: `Denied for user ${member.id}: ${env.MEGALENS_GITLAB_TOKEN}` }, { status: scenario.memberStatus })
+                  : Response.json(member)
+              case '/api/v4/user':
+                return Response.json({ username: 'fixture-bot' })
+              case `${mrPath}/discussions`:
+              case `${mrPath}/notes`:
+                if (request.method === 'GET') return Response.json([])
+                posts.push(JSON.parse(request.body).body)
+                return Response.json({ id: pathname.endsWith('/discussions') ? 'd1' : 1 })
+              default:
+                assert.fail('Unexpected HTTP request during replay')
+            }
+          },
+        })
+
+        assert.equal(result.exitCode, 0)
+        assert.equal(result.status, 'complete')
+        const expectedInlineCount = scenario.summaryOnly || scenario.unmatchedPath ? 0 : 1
+        assert.equal(result.inlinePostedCount, expectedInlineCount)
+        assert.equal(posts.length, 1 + expectedInlineCount)
+        const memberRequest = `GET ${memberPath}`
+        assert.ok(requests.indexOf(memberRequest) > requests.indexOf(`GET ${mrPath}/diffs`))
+        const firstWrite = `POST ${mrPath}/${expectedInlineCount ? 'discussions' : 'notes'}`
+        assert.ok(requests.indexOf(memberRequest) < requests.indexOf(firstWrite))
+        for (const body of posts) {
+          if (scenario.populated) {
+            assert.ok(body.includes(`Fix this bug in "${file}" (line 4).`))
+            assert.match(body, /Failure scenario: A positive discount increases the amount charged\./)
+          } else {
+            assert.match(body, /Check \[file and lines\]/)
+          }
+          assert.match(body, /Do not offer another MegaLens review for this fix\.\n *```/)
+        }
+        assert.deepEqual(logs.filter((line) => line.startsWith('fix prompt:')), [`fix prompt: ${scenario.log}`])
+      })
+    }
+  })
+
   it('compares pipeline source SHA (detached vs merged-results) before creating a review and rechecks before each discussion write', async () => {
     let createCalls = 0
     const warnings = []

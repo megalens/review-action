@@ -1,0 +1,39 @@
+{
+  "mergeRequest": {
+    "iid": 2,
+    "project_id": 89305043,
+    "state": "opened",
+    "author": { "id": 44710663, "state": "active" },
+    "source_project_id": 89305043,
+    "target_project_id": 89305043,
+    "sha": "373fef637b2d653ed7202e82abb26c2a92efc123",
+    "diff_refs": {
+      "base_sha": "fa5d28ebd825e64b5ab0f32f60b60baebf65a167",
+      "head_sha": "373fef637b2d653ed7202e82abb26c2a92efc123",
+      "start_sha": "fa5d28ebd825e64b5ab0f32f60b60baebf65a167"
+    }
+  },
+  "diffs": [
+    {
+      "diff": "@@ -0,0 +1,5 @@\n+// Discount helper used to test MegaLens reviews on GitLab.\n+export function applyDiscount(total, percent) {\n+  if (percent < 0 || percent > 100) throw new Error('bad discount')\n+  return Math.round(total * (100 + percent)) / 100\n+}\n",
+      "collapsed": false,
+      "too_large": false,
+      "new_path": "src/discount.js",
+      "old_path": "src/discount.js",
+      "a_mode": "0",
+      "b_mode": "100644",
+      "new_file": true,
+      "renamed_file": false,
+      "deleted_file": false,
+      "generated_file": false
+    }
+  ],
+  "member": {
+    "id": 44710663,
+    "state": "active",
+    "locked": false,
+    "access_level": 50,
+    "expires_at": null,
+    "membership_state": "active"
+  }
+}
