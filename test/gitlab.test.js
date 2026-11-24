@@ -16,7 +16,7 @@ import {
   PINNED_ENGINE_VERSION,
   runEngineCli,
 } from '../src/engine.js'
-import { parseSummaryMeta, summaryMetaMarker } from '../src/format.js'
+import { formatSummaryComment, parseSummaryMeta, summaryMetaMarker } from '../src/format.js'
 import { createGitLabApi } from '../src/gitlab-api.js'
 import {
   buildGitLabPosition,
@@ -1395,13 +1395,16 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
         const prompts = [...extractPrompts(discussions[0]), ...extractPrompts(summaries[0])]
         assert.equal(prompts.length, 7)
         const populated = prompts.filter((prompt) => prompt.startsWith('Fix this bug in '))
-        assert.equal(populated.length, scenario.populated ? 3 : 0)
+        assert.equal(populated.length, scenario.populated ? 5 : 0)
         if (scenario.populated) {
           assert.equal(populated.filter((prompt) => prompt.includes(`"${path}" (lines 12-14)`)).length, 2)
           assert.equal(populated.filter((prompt) => prompt.includes(`"${otherPath}" (line 25)`)).length, 1)
+          assert.ok(populated.some((prompt) => prompt.includes(`"${otherPath}" (lines 12-14)`)
+            && !prompt.includes('Failure scenario:')))
+          assert.ok(populated.some((prompt) => prompt.startsWith(`Fix this bug in "${otherPath}".`)))
+          assert.equal(populated.filter((prompt) => prompt.includes('Failure scenario: Empty input throws a TypeError.')).length, 4)
           for (const prompt of populated) {
             assert.match(prompt, /Problem: Empty input throws\. The parser assumes a value exists\./)
-            assert.match(prompt, /Failure scenario: Empty input throws a TypeError\./)
           }
         }
         for (const prompt of prompts) {
@@ -1426,8 +1429,8 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
       { name: 'Owner with inline discussions disabled', log: 'ready-to-paste', populated: true, summaryOnly: true },
       { name: 'Owner with a strong engine finding and an empty scenario', log: 'ready-to-paste', populated: true, emptyScenario: true },
       { name: 'Owner with a strong engine finding and inline disabled', log: 'ready-to-paste', populated: true, emptyScenario: true, summaryOnly: true },
-      { name: 'Owner with only a title', log: 'fill-in (finding did not meet fix prompt requirements)', emptyScenario: true, titleOnly: true },
-      { name: 'Owner with a claim outside the live diff', log: 'fill-in (finding did not meet fix prompt requirements)', emptyScenario: true, outOfDiff: true },
+      { name: 'Owner with only a title gets a populated summary prompt and an inline template', log: 'ready-to-paste', populated: true, emptyScenario: true, titleOnly: true },
+      { name: 'Owner with a claim outside the hunk on a verified changed file', log: 'ready-to-paste', populated: true, emptyScenario: true, outOfDiff: true },
       { name: 'Reporter with a strong engine finding and an empty scenario', log: 'fill-in (author access level below Developer)', emptyScenario: true, memberLevel: 20 },
       { name: 'Owner without a verified finding path', log: 'fill-in (no finding matched a verified diff path)', unmatchedPath: true },
       { name: 'posting credential denied member access', log: 'fill-in (membership request failed with HTTP 403)', memberStatus: 403 },
@@ -1509,13 +1512,16 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
         assert.ok(requests.indexOf(memberRequest) > requests.indexOf(`GET ${mrPath}/diffs`))
         const firstWrite = `POST ${mrPath}/${expectedInlineCount ? 'discussions' : 'notes'}`
         assert.ok(requests.indexOf(memberRequest) < requests.indexOf(firstWrite))
-        for (const body of posts) {
-          if (scenario.populated) {
-            assert.ok(body.includes(`Fix this bug in "${file}" (line 4).`))
+        for (const [index, body] of posts.entries()) {
+          const isInline = index < expectedInlineCount
+          if (scenario.populated && !(isInline && scenario.titleOnly)) {
+            assert.ok(body.includes(`Fix this bug in "${file}" (line ${finding.line_start}).`))
             if (scenario.emptyScenario) {
-              assert.match(body, /Problem: Positive discounts increase the price\. Adding the percentage raises the total\./)
+              if (!scenario.titleOnly) {
+                assert.match(body, /Problem: Positive discounts increase the price\. Adding the percentage raises the total\./)
+              }
               assert.doesNotMatch(body, /Failure scenario:/)
-              assert.match(body, /Verify a concrete failure scenario in the code before editing\./)
+              assert.equal(body.includes('Verify a concrete failure scenario in the code before editing.'), isInline)
             } else {
               assert.match(body, /Failure scenario: A positive discount increases the amount charged\./)
             }
@@ -1527,6 +1533,71 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
         assert.deepEqual(logs.filter((line) => line.startsWith('fix prompt:')), [`fix prompt: ${scenario.log}`])
       })
     }
+  })
+
+  it('publishes the captured GitLab P2 summary with the same fix prompt as GitHub', async () => {
+    const { mergeRequest: mr, diffs } = JSON.parse(readFileSync(
+      join(ROOT, 'test', 'fixtures', 'gitlab-live-mr3.json'), 'utf8',
+    ))
+    const { base_sha: base, head_sha: head } = mr.diff_refs
+    const mrPath = `/api/v4/projects/${mr.project_id}/merge_requests/${mr.iid}`
+    const memberPath = `/api/v4/projects/${mr.project_id}/members/all/${mr.author.id}`
+    const file = diffs[0].new_path
+    // Reconstruct the finding from the live review. The raw findings artifact was unavailable.
+    const finding = {
+      id: 'shipping', file, line_start: 4, priority: 'P2', strength: 'normal',
+      title: 'Correct the shipping rate for packages up to 1 kg',
+      claim: 'The tier for packages up to 1 kg uses the wrong rate. shippingCents(1000) returns 50,000 cents while shippingCents(1001) returns 500.',
+      failure_scenario: '',
+      expected_behavior: 'Charge 500 cents for packages up to 1 kg.',
+    }
+    const doc = JSON.parse(makeDoc([finding], { target: { kind: 'range', base, head } }))
+    const artifact = JSON.stringify({
+      schema: 'megalens.gitlab-result/v1', kind: 'review', tier: 'standard',
+      ...mr.diff_refs, exit_code: 0, strong_finding_indexes: [],
+      doc: sanitizeFindingsDocumentForArtifact(doc),
+    })
+    const notes = []
+    const logs = []
+    const result = await runGitLabReview({
+      env: makeMrEnv({
+        CI_PROJECT_ID: String(mr.project_id),
+        CI_MERGE_REQUEST_SOURCE_PROJECT_ID: String(mr.source_project_id),
+        CI_MERGE_REQUEST_PROJECT_ID: String(mr.target_project_id),
+        CI_MERGE_REQUEST_IID: String(mr.iid),
+        CI_MERGE_REQUEST_DIFF_BASE_SHA: base,
+        CI_COMMIT_SHA: head,
+        MEGALENS_MODE: 'publish', MEGALENS_RESULT_PATH: 'review-result.json', MEGALENS_TOKEN: '',
+      }),
+      log: (line) => logs.push(line),
+      readResultImpl: async () => artifact,
+      fetchImpl: async (url, request) => {
+        switch (`${request.method} ${new URL(url).pathname}`) {
+          case `GET ${mrPath}`: return Response.json(mr)
+          case `GET ${mrPath}/diffs`: return Response.json(diffs)
+          case `GET ${memberPath}`: return Response.json({ id: mr.author.id, state: 'active', access_level: 50 })
+          case 'GET /api/v4/user': return Response.json({ username: 'fixture-bot' })
+          case `GET ${mrPath}/discussions`:
+          case `GET ${mrPath}/notes`: return Response.json([])
+          case `POST ${mrPath}/notes`:
+            notes.push(JSON.parse(request.body).body)
+            return Response.json({ id: 1 })
+          default: assert.fail('Unexpected HTTP request during replay')
+        }
+      },
+    })
+
+    assert.equal(result.status, 'complete')
+    assert.equal(result.inlinePostedCount, 0)
+    assert.equal(result.normalFindings.length, 1)
+    assert.equal(notes.length, 1)
+    const githubSummary = formatSummaryComment({ headSha: head, doc, normalFindings: [finding], fixPromptPaths: new Set([file]) })
+    const prompt = /^  ```\n[\s\S]*?\n  ```$/m
+    const gitlabPrompt = notes[0].match(prompt)?.[0]
+    assert.ok(gitlabPrompt?.includes('Fix this bug in "src/shipping.js" (line 4).'))
+    assert.equal(gitlabPrompt, githubSummary.match(prompt)?.[0])
+    assert.match(gitlabPrompt, /Expected: Charge 500 cents for packages up to 1 kg\./)
+    assert.deepEqual(logs.filter((line) => line.startsWith('fix prompt:')), ['fix prompt: ready-to-paste'])
   })
 
   it('compares pipeline source SHA (detached vs merged-results) before creating a review and rechecks before each discussion write', async () => {
@@ -1856,6 +1927,7 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
           title: `Hardcoded token ${secretGhp}`,
           claim: `Exposes ${secretGlpat}, ${secretMltok}, and postgres://reader:sample-password@example.invalid/test`,
           failure_scenario: `Allows auth using ${secretReviewKey}`,
+          expected_behavior: `Reject credentials like ${secretReviewKey}.`,
           evidence_quote: `const KEY = "${secretPem}"\nconst PAT = "${secretGhp}"`,
           priority: 'P0',
           strength: 'strong',
@@ -1912,6 +1984,7 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
     const parsedArtifact = parseGitLabResultArtifact(artifactText)
     assert.equal(parsedArtifact.doc.dropped_findings, undefined, 'dropped_findings must be stripped from artifact')
     assert.equal(parsedArtifact.doc.findings[0].evidence_quote, undefined, 'evidence_quote must be stripped from artifact')
+    assert.equal(parsedArtifact.doc.findings[0].expected_behavior, 'Reject credentials like [redacted].')
     assert.equal(parsedArtifact.doc.findings[0].file, '')
     assert.deepEqual(parsedArtifact.strongFindingIndexes, new Set([0]))
     assert.equal(parsedArtifact.localDiffHunks, null)

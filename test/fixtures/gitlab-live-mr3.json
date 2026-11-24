@@ -1,0 +1,34 @@
+{
+  "mergeRequest": {
+    "iid": 3,
+    "project_id": 89305043,
+    "state": "opened",
+    "author": {
+      "id": 44710663,
+      "state": "active"
+    },
+    "source_project_id": 89305043,
+    "target_project_id": 89305043,
+    "sha": "3ee247f2c1172b87e1c425cd38b2cf715364e114",
+    "diff_refs": {
+      "base_sha": "1280176405918483365f9c98fb860fab7999f24b",
+      "head_sha": "3ee247f2c1172b87e1c425cd38b2cf715364e114",
+      "start_sha": "1280176405918483365f9c98fb860fab7999f24b"
+    }
+  },
+  "diffs": [
+    {
+      "diff": "@@ -0,0 +1,5 @@\n+// Shipping helper used to test MegaLens reviews on GitLab.\n+export function shippingCents(weightGrams) {\n+  if (weightGrams <= 0) return 0\n+  return weightGrams > 1000 ? 500 : 50000\n+}\n",
+      "collapsed": false,
+      "too_large": false,
+      "new_path": "src/shipping.js",
+      "old_path": "src/shipping.js",
+      "a_mode": "0",
+      "b_mode": "100644",
+      "new_file": true,
+      "renamed_file": false,
+      "deleted_file": false,
+      "generated_file": false
+    }
+  ]
+}

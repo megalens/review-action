@@ -89,7 +89,7 @@ export function formatGitLabSummaryNote(input) {
     ? 0
     : input.gateStrongCount ?? input.strongFindings?.length ?? 0
   return finalizeGitLabMarkdown(
-    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER, requireFixPromptDetails: true }),
+    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER }),
     input?.extraSecrets,
   )
 }

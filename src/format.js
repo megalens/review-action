@@ -266,7 +266,7 @@ function cleanPromptText(value, max, extraSecrets) {
   return clip(redactReviewText(clean, extraSecrets), max - 1)
 }
 
-function formatFixPrompt(finding, extraSecrets, paths, requireDetails) {
+function formatFixPrompt(finding, extraSecrets, paths, requireDetails = false) {
   const file = finding.file
   if (!file || !paths?.has(file) || redactReviewText(file, extraSecrets) !== file) return FIX_PROMPT
 
@@ -351,7 +351,7 @@ export function formatInlineComment(finding, extraSecrets, fixPromptPaths, requi
   return parts.join('\n')
 }
 
-function formatSummaryItem(finding, { extraSecrets, fixPromptPaths, requireFixPromptDetails }) {
+function formatSummaryItem(finding, { extraSecrets, fixPromptPaths }) {
   const options = { singleLine: true, extraSecrets }
   const priority = sanitizeText(finding.priority || 'P2', 10, options)
   const line = finding.line_start ? `:${finding.line_start}` : ''
@@ -361,7 +361,7 @@ function formatSummaryItem(finding, { extraSecrets, fixPromptPaths, requireFixPr
   const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 300, options) : ''
   const description = [title, sentenceEnd(claim), sentenceEnd(scenario)].filter(Boolean).join(' ')
   const appNote = finding.alsoFoundByApp ? ' *(also found by the App)*' : ''
-  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails).replace(/^(?=.)/gm, '  ')
+  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths).replace(/^(?=.)/gm, '  ')
   return `- **${priority}**${where}: ${description}${appNote}\n\n${prompt}\n`
 }
 

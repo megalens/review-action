@@ -1088,7 +1088,7 @@ function cleanPromptText(value, max, extraSecrets) {
   return clip(redactReviewText(clean, extraSecrets), max - 1)
 }
 
-function formatFixPrompt(finding, extraSecrets, paths, requireDetails) {
+function formatFixPrompt(finding, extraSecrets, paths, requireDetails = false) {
   const file = finding.file
   if (!file || !paths?.has(file) || redactReviewText(file, extraSecrets) !== file) return FIX_PROMPT
 
@@ -1173,7 +1173,7 @@ function formatInlineComment(finding, extraSecrets, fixPromptPaths, requireFixPr
   return parts.join('\n')
 }
 
-function formatSummaryItem(finding, { extraSecrets, fixPromptPaths, requireFixPromptDetails }) {
+function formatSummaryItem(finding, { extraSecrets, fixPromptPaths }) {
   const options = { singleLine: true, extraSecrets }
   const priority = sanitizeText(finding.priority || 'P2', 10, options)
   const line = finding.line_start ? `:${finding.line_start}` : ''
@@ -1183,7 +1183,7 @@ function formatSummaryItem(finding, { extraSecrets, fixPromptPaths, requireFixPr
   const scenario = finding.failure_scenario ? sanitizeText(finding.failure_scenario, 300, options) : ''
   const description = [title, sentenceEnd(claim), sentenceEnd(scenario)].filter(Boolean).join(' ')
   const appNote = finding.alsoFoundByApp ? ' *(also found by the App)*' : ''
-  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths, requireFixPromptDetails).replace(/^(?=.)/gm, '  ')
+  const prompt = formatFixPrompt(finding, extraSecrets, fixPromptPaths).replace(/^(?=.)/gm, '  ')
   return `- **${priority}**${where}: ${description}${appNote}\n\n${prompt}\n`
 }
 
@@ -2472,7 +2472,7 @@ function formatGitLabSummaryNote(input) {
     ? 0
     : input.gateStrongCount ?? input.strongFindings?.length ?? 0
   return finalizeGitLabMarkdown(
-    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER, requireFixPromptDetails: true }),
+    formatSummaryComment({ ...input, gateStrongCount, metadataMarker: GITLAB_GATE_MARKER }),
     input?.extraSecrets,
   )
 }
@@ -3283,6 +3283,7 @@ function sanitizeFindingsDocumentForArtifact(doc, extraSecrets = []) {
           title: scrub(f.title),
           claim: scrub(f.claim),
           failure_scenario: scrub(f.failure_scenario),
+          ...(typeof f.expected_behavior === 'string' ? { expected_behavior: scrub(f.expected_behavior) } : {}),
           priority: f.priority,
           strength: f.strength,
           ...(Array.isArray(f.found_by) ? { found_by: f.found_by.map((item) => scrub(item)) } : {}),

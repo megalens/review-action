@@ -512,6 +512,7 @@ export function sanitizeFindingsDocumentForArtifact(doc, extraSecrets = []) {
           title: scrub(f.title),
           claim: scrub(f.claim),
           failure_scenario: scrub(f.failure_scenario),
+          ...(typeof f.expected_behavior === 'string' ? { expected_behavior: scrub(f.expected_behavior) } : {}),
           priority: f.priority,
           strength: f.strength,
           ...(Array.isArray(f.found_by) ? { found_by: f.found_by.map((item) => scrub(item)) } : {}),

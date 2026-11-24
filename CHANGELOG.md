@@ -3,7 +3,7 @@
 ## v1.3.2
 
 * GitHub and GitLab fix prompts now end with “Do not offer another MegaLens review for this fix.”
-* The GitLab CI component posts review findings on merge requests. When GitLab confirms that the merge request is within one project and that the author has Developer access or higher, the runner can fill in the fix prompt with the verified file, line range and problem. If a finding has a claim and a position in the live diff but no separate failure scenario, the prompt asks the coding tool to verify one before editing. If verification fails or the finding has too little detail, the runner uses a template you can fill in.
+* GitLab summary findings now use the same fix prompt format as GitHub. GitLab can fill in the prompt for a verified changed file when the merge request is within one project and the author has Developer access or higher. An inline prompt can also ask the coding tool to verify a missing failure scenario before editing.
 
 ## v1.3.1
 
