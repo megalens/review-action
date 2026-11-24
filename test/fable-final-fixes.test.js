@@ -22,6 +22,38 @@ const SHA_HEAD = '2222222222222222222222222222222222222222'
 const SHA_MOVED = '3333333333333333333333333333333333333333'
 const SNAPSHOT_SHA = 'a'.repeat(64)
 
+async function makeAttributedDeepDoc() {
+  const doc = JSON.parse(await readFile(join(ENGINE_DOCS_DIR, 'complete-with-route.json'), 'utf8'))
+  const openai = { ...doc.passes[0], name: 'codex-deep', company: 'OpenAI' }
+  const google = { ...doc.passes[0], name: 'neon-deep', model: 'gemini-4-neon', route: 'google', company: 'Google' }
+  const finding = doc.findings[0]
+  return {
+    ...doc,
+    tier: 'deep',
+    target: { ...doc.target, base: SHA_BASE, head: SHA_HEAD },
+    companies: [openai.company, google.company],
+    passes: [openai, google],
+    findings: [{
+      ...finding,
+      found_by: [openai.name, google.name],
+      companies: [openai.company, google.company],
+      reviewer: { company: openai.company, model: openai.model },
+    }],
+    dropped_by_quiet_mode: 1,
+    dropped_findings: [{
+      drop_reason: 'dedupe',
+      kept_id: finding.id,
+      finding: {
+        ...finding,
+        id: 'f2',
+        found_by: [google.name],
+        companies: [google.company],
+        reviewer: { company: google.company, model: google.model },
+      },
+    }],
+  }
+}
+
 function makeHarness(env = {}) {
   const outputs = {}
   const summaries = []
@@ -57,6 +89,107 @@ function makeIssueCommentPayload(body = '/megalens review', login = 'maintainer'
     comment: { id: 99, body, user: { login, type: 'User' } },
   }
 }
+
+describe('megalens-review 0.1.8 provider attribution', () => {
+  it('preserves attribution at every level, including a nullable reviewer model', async () => {
+    const doc = await makeAttributedDeepDoc()
+    doc.dropped_findings[0].finding.reviewer.model = null
+    const parsed = parseFindingsDocument(JSON.stringify(doc))
+
+    assert.deepEqual(parsed.companies, ['OpenAI', 'Google'])
+    assert.deepEqual(parsed.passes.map((pass) => pass.company), ['OpenAI', 'Google'])
+    assert.deepEqual(parsed.findings[0].companies, ['OpenAI', 'Google'])
+    assert.deepEqual(parsed.findings[0].reviewer, doc.findings[0].reviewer)
+    assert.deepEqual(parsed.dropped_findings[0].finding.companies, ['Google'])
+    assert.deepEqual(parsed.dropped_findings[0].finding.reviewer, { company: 'Google', model: null })
+  })
+
+  it('rejects invalid attribution and unknown fields at each level', async () => {
+    const valid = await makeAttributedDeepDoc()
+    const cases = [
+      ['root', (doc) => { doc.extra = true }, /unexpected field "extra" in root/],
+      ['company list type', (doc) => { doc.companies = null }, /companies must be an array/],
+      ['company list size', (doc) => { doc.companies = ['OpenAI', 'Google', 'OpenAI'] }, /companies must be an array of up to 2/],
+      ['fallback reason type', (doc) => { doc.fallback_reason = 42 }, /fallback_reason must be a string/],
+      ['empty fallback reason', (doc) => { doc.fallback_reason = '' }, /fallback_reason must not be empty/],
+      ['fallback reason length', (doc) => { doc.fallback_reason = 'x'.repeat(129) }, /fallback_reason exceeds max length 128/],
+      ['pass', (doc) => { doc.passes[0].extra = true }, /unexpected field "extra" in passes\[0\]/],
+      ['pass company', (doc) => { doc.passes[0].company = 'Unknown' }, /passes\[0\]\.company must be/],
+      ['finding', (doc) => { doc.findings[0].extra = true }, /unexpected field "extra" in findings\[0\]/],
+      ['finding company', (doc) => { doc.findings[0].companies = ['Other'] }, /findings\[0\]\.companies\[0\] must be/],
+      ['reviewer', (doc) => { doc.findings[0].reviewer = [] }, /reviewer must be a JSON object/],
+      ['reviewer extra key', (doc) => { doc.findings[0].reviewer.extra = true }, /unexpected field "extra" in findings\[0\]\.reviewer/],
+      ['reviewer company', (doc) => { delete doc.findings[0].reviewer.company }, /reviewer\.company must be/],
+      ['reviewer model type', (doc) => { doc.findings[0].reviewer.model = 42 }, /reviewer\.model must be a string/],
+      ['reviewer model required', (doc) => { delete doc.findings[0].reviewer.model }, /reviewer\.model is required/],
+      ['reviewer model length', (doc) => { doc.findings[0].reviewer.model = 'x'.repeat(129) }, /reviewer\.model exceeds max length 128/],
+      ['dropped finding company', (doc) => { doc.dropped_findings[0].finding.reviewer.company = 'Other' }, /dropped_findings\[0\]\.finding\.reviewer\.company must be/],
+    ]
+    for (const [label, modify, expected] of cases) {
+      const doc = structuredClone(valid)
+      modify(doc)
+      assert.throws(() => parseFindingsDocument(JSON.stringify(doc)), expected, label)
+    }
+    assert.throws(() => parseFindingsDocument({ ...valid, companies: Array(1) }), /companies\[0\] must be/)
+  })
+
+  for (const command of ['deep', 'review']) {
+    it(`publishes a complete full-mode ${command === 'deep' ? 'multi-reviewer Deep' : 'provider fallback'} PR review`, async () => {
+      const doc = await makeAttributedDeepDoc()
+      if (command === 'review') {
+        const [openai, google] = doc.passes
+        const finding = doc.dropped_findings[0].finding
+        doc.tier = 'standard'
+        doc.companies = ['Google']
+        doc.fallback_reason = 'openai_timeout'
+        doc.route = google.route
+        doc.passes = [
+          { ...openai, name: 'codex-standard', status: 'failed', reason: 'timeout', superseded_by: 'neon-standard', waived: true },
+          { ...google, name: 'neon-standard' },
+        ]
+        doc.findings = [{ ...finding, found_by: ['neon-standard'] }]
+        doc.dropped_by_quiet_mode = 0
+        doc.dropped_findings = []
+      }
+
+      const posted = []
+      const h = makeHarness({
+        GITHUB_EVENT_NAME: 'issue_comment',
+        GITHUB_REPOSITORY: 'acme/widget',
+        INPUT_MODE: 'full',
+        INPUT_INLINE: 'false',
+        'INPUT_GITHUB-TOKEN': 'github-test-placeholder',
+        'INPUT_MEGALENS-TOKEN': 'megalens-test-placeholder',
+      })
+      const result = await runAction({
+        ...h,
+        payload: makeIssueCommentPayload(`/megalens ${command}`),
+        runEngine: async ({ tier, authMode }) => {
+          assert.equal(tier, doc.tier)
+          assert.equal(authMode, 'gateway')
+          return { exitCode: 0, stdout: '', stderr: '', rawFindings: JSON.stringify(doc) }
+        },
+        createGitHubApi: () => ({
+          getCollaboratorPermission: async () => 'write',
+          getPull: async () => ({ open: true, isFork: false, headSha: SHA_HEAD, baseSha: SHA_BASE }),
+          listPullFiles: async () => [{ filename: 'src/a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-export const a = 1;\n+export const a = 2;' }],
+          findSummaryComment: async () => null,
+          createIssueComment: async (_owner, _repo, _number, body) => posted.push(body),
+        }),
+      })
+
+      const summary = posted.find((body) => body.startsWith(summaryMarker(doc.tier)))
+      assert.equal(result.exitCode, 0)
+      assert.equal(h.outputs.status, 'complete')
+      assert.equal(h.outputs['strong-count'], '1')
+      assert.ok(summary, 'published the tier summary to the PR')
+      assert.match(summary, /Null deref in a/)
+      if (command === 'review') {
+        assert.equal(parseFindingsDocument(JSON.stringify(doc)).fallback_reason, 'openai_timeout')
+      }
+    })
+  }
+})
 
 describe('Fable final review fixes (items 1-8)', () => {
   it('1. buildCliInvocation drops --repo, passes engine cli.mjs parseArgs, and runEngineCli uses repoPath as cwd', async () => {

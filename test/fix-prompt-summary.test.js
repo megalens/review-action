@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { readdir, readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { promisify } from 'node:util'
 import { runAction, selectNewInlineFindings } from '../src/action.js'
 import { buildCliInvocation, runEngineCli } from '../src/engine.js'
 import {
@@ -691,13 +687,13 @@ test('README workflow examples pin megalens/review-action to a real 40-character
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
   const zeroSha = '0'.repeat(40)
   assert.ok(!readme.includes(`megalens/review-action@${zeroSha}`), 'no all-zero placeholder pins')
-  const pins = [...readme.matchAll(/uses: megalens\/review-action@([0-9a-f]+)(?: # (v\d+\.\d+\.\d+))?/g)]
+  const pins = [...readme.matchAll(/^[ \t]*(?:-[ \t]+)?uses:[ \t]*(['"]?)megalens\/review-action@([^\s#'"]*)(?:\1[ \t]+#[ \t]+(v\d+\.\d+\.\d+)\b)?/gm)]
   assert.ok(pins.length >= 3, 'the workflow examples pin the action')
-  for (const [, sha, tag] of pins) {
-    assert.match(sha, /^[0-9a-f]{40}$/, 'pins are full 40-character commit SHAs')
+  for (const [, , sha, tag] of pins) {
+    assert.match(sha, /^[0-9a-f]{40}$/i, 'pins are full 40-character commit SHAs')
     assert.ok(tag, 'each pin names its release tag in a comment')
   }
-  assert.equal(new Set(pins.map((m) => m[1])).size, 1, 'all examples pin the same release commit')
+  assert.equal(new Set(pins.map(([, , sha]) => sha.toLowerCase())).size, 1, 'all examples pin the same release commit')
   // Manual setup still explains how to resolve a release tag to its commit SHA.
   assert.match(readme, /git ls-remote --tags https:\/\/github\.com\/megalens\/review-action\.git/)
 })
