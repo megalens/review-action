@@ -60,18 +60,18 @@ Same credits, same 3 free Standard reviews, same size guard (`too_large` ends gr
          stage: test
          fail_on: none         # none (default) or strong
          gitlab_api_url: https://gitlab.com/api/v4
-         image: registry.example.com/megalens/gitlab-runner@sha256:<BUILT_IMAGE_DIGEST>
-         runner_url: https://raw.githubusercontent.com/megalens/review-action/<RELEASE_COMMIT_SHA>/dist/gitlab.mjs
+         image: registry.gitlab.com/megalens1/megalens-runner@sha256:0b35a5ee8834184e53f6fe63cf46d8c38708a5a015bf8e948084ccbf74332921
+         runner_url: https://raw.githubusercontent.com/megalens/review-action/34c21108a831e9424ed2d48d0ff448407eba8600/dist/gitlab.mjs
 
    # Option B: Direct remote include pinned to a release commit SHA
    # include:
-   #   - remote: https://raw.githubusercontent.com/megalens/review-action/<RELEASE_COMMIT_SHA>/templates/megalens-review.yml
+   #   - remote: https://raw.githubusercontent.com/megalens/review-action/34c21108a831e9424ed2d48d0ff448407eba8600/templates/megalens-review.yml
    #     inputs:
    #       stage: test
    #       fail_on: none
    #       gitlab_api_url: https://gitlab.com/api/v4
-   #       image: registry.example.com/megalens/gitlab-runner@sha256:<BUILT_IMAGE_DIGEST>
-   #       runner_url: https://raw.githubusercontent.com/megalens/review-action/<RELEASE_COMMIT_SHA>/dist/gitlab.mjs
+   #       image: registry.gitlab.com/megalens1/megalens-runner@sha256:0b35a5ee8834184e53f6fe63cf46d8c38708a5a015bf8e948084ccbf74332921
+   #       runner_url: https://raw.githubusercontent.com/megalens/review-action/34c21108a831e9424ed2d48d0ff448407eba8600/dist/gitlab.mjs
    ```
 
    Set the required `gitlab_api_url` input in the trusted include configuration. Use `https://gitlab.com/api/v4` for GitLab.com. For other instances, include your port or installation path if needed, for example `https://gitlab.example.com:8443/gitlab/api/v4`.
