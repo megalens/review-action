@@ -213,6 +213,7 @@ const VALID_PASS_STATUSES = new Set(['ok', 'failed'])
 const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3'])
 const VALID_STRENGTHS = new Set(['strong', 'normal'])
 const VALID_DROP_REASONS = new Set(['dedupe', 'quiet'])
+const VALID_COMPANIES = new Set(['OpenAI', 'Google'])
 
 const PRIORITY_ORDER = ['P0', 'P1', 'P2', 'P3']
 const INLINE_PRIORITIES = new Set(['P0', 'P1'])
@@ -246,6 +247,7 @@ const MAX_STRING_LENGTHS = Object.freeze({
   isolation: 64,
   error: 2000,
   reason: 128,
+  fallback_reason: 128,
 })
 
 const ALLOWED_ROOT_KEYS = new Set([
@@ -266,6 +268,8 @@ const ALLOWED_ROOT_KEYS = new Set([
   'refused',
   'reason',
   'error',
+  'companies',
+  'fallback_reason',
 ])
 const ALLOWED_SANDBOX_KEYS = new Set(['excluded_files', 'skipped_files'])
 const ALLOWED_TARGET_KEYS = new Set(['kind', 'base', 'head', 'snapshot_sha256'])
@@ -281,6 +285,7 @@ const ALLOWED_PASS_KEYS = new Set([
   'superseded_by',
   'waived',
   'short_run',
+  'company',
 ])
 const ALLOWED_FINDING_KEYS = new Set([
   'id',
@@ -295,7 +300,10 @@ const ALLOWED_FINDING_KEYS = new Set([
   'strength',
   'found_by',
   'evidence_quote',
+  'companies',
+  'reviewer',
 ])
+const ALLOWED_REVIEWER_KEYS = new Set(['company', 'model'])
 const ALLOWED_DROPPED_KEYS = new Set(['finding', 'drop_reason', 'kept_id', 'audit_label', 'audit_tokens'])
 const ALLOWED_USAGE_KEYS = new Set(['requests', 'input_tokens', 'cached_input_tokens', 'output_tokens'])
 
@@ -340,8 +348,22 @@ function assertOptionalNonNegInt(val, label) {
   return val
 }
 
-function validateFinding(f, index, labelPrefix = 'findings') {
-  const label = `${labelPrefix}[${index}]`
+function assertCompany(company, label) {
+  if (!VALID_COMPANIES.has(company)) {
+    throw new Error(`Invalid findings.json: ${label} must be "OpenAI" or "Google".`)
+  }
+  return company
+}
+
+function assertOptionalCompanies(companies, label) {
+  if (companies === undefined) return undefined
+  if (!Array.isArray(companies) || companies.length > VALID_COMPANIES.size) {
+    throw new Error(`Invalid findings.json: ${label} must be an array of up to ${VALID_COMPANIES.size} companies.`)
+  }
+  return Array.from(companies, (company, index) => assertCompany(company, `${label}[${index}]`))
+}
+
+function validateFinding(f, index, label = `findings[${index}]`) {
   assertPlainObject(f, label)
   assertAllowedKeys(f, ALLOWED_FINDING_KEYS, label)
 
@@ -404,6 +426,20 @@ function validateFinding(f, index, labelPrefix = 'findings') {
     )
   }
 
+  const companies = assertOptionalCompanies(f.companies, `${label}.companies`)
+  let reviewer
+  if (f.reviewer !== undefined) {
+    const reviewerLabel = `${label}.reviewer`
+    assertPlainObject(f.reviewer, reviewerLabel)
+    assertAllowedKeys(f.reviewer, ALLOWED_REVIEWER_KEYS, reviewerLabel)
+    reviewer = {
+      company: assertCompany(f.reviewer.company, `${reviewerLabel}.company`),
+      model: f.reviewer.model === null
+        ? null
+        : assertBoundedString(f.reviewer.model, MAX_STRING_LENGTHS.pass_model, `${reviewerLabel}.model`, { required: true }),
+    }
+  }
+
   return {
     id: idRaw && idRaw.trim() ? idRaw.trim() : `finding-${index + 1}`,
     file: fileRaw ?? '',
@@ -417,6 +453,8 @@ function validateFinding(f, index, labelPrefix = 'findings') {
     strength: f.strength,
     found_by: foundBy,
     evidence_quote: typeof evidenceRaw === 'string' ? evidenceRaw : undefined,
+    ...(companies !== undefined ? { companies } : {}),
+    ...(reviewer !== undefined ? { reviewer } : {}),
   }
 }
 
@@ -458,6 +496,13 @@ function parseFindingsDocument(input) {
   }
 
   const reviewId = assertBoundedString(doc.review_id, MAX_STRING_LENGTHS.review_id, 'review_id') ?? null
+  const companies = assertOptionalCompanies(doc.companies, 'companies')
+  const fallbackReason = doc.fallback_reason === undefined
+    ? undefined
+    : assertBoundedString(doc.fallback_reason, MAX_STRING_LENGTHS.fallback_reason, 'fallback_reason', {
+      required: true,
+      nonEmpty: true,
+    })
 
   let tier = null
   if (doc.tier !== undefined && doc.tier !== null) {
@@ -473,7 +518,7 @@ function parseFindingsDocument(input) {
   if (doc.findings.length > MAX_FINDINGS_COUNT) {
     throw new Error(`Invalid findings.json: findings count exceeds max ${MAX_FINDINGS_COUNT}.`)
   }
-  const findings = doc.findings.map((f, index) => validateFinding(f, index, 'findings'))
+  const findings = doc.findings.map((f, index) => validateFinding(f, index))
 
   let passes = []
   if (doc.passes !== undefined) {
@@ -499,6 +544,7 @@ function parseFindingsDocument(input) {
       const reason = assertBoundedString(p.reason, MAX_STRING_LENGTHS.pass_reason, `${label}.reason`)
       const route = assertBoundedString(p.route, MAX_STRING_LENGTHS.route, `${label}.route`)
       const detail = assertBoundedString(p.detail, MAX_STRING_LENGTHS.pass_detail, `${label}.detail`)
+      const company = p.company === undefined ? undefined : assertCompany(p.company, `${label}.company`)
       const supersededBy = assertBoundedString(
         p.superseded_by,
         MAX_STRING_LENGTHS.superseded_by,
@@ -535,6 +581,7 @@ function parseFindingsDocument(input) {
         ...(typeof supersededBy === 'string' ? { superseded_by: supersededBy } : {}),
         ...(typeof waived === 'boolean' ? { waived } : {}),
         ...(typeof shortRun === 'boolean' ? { short_run: shortRun } : {}),
+        ...(company !== undefined ? { company } : {}),
       }
     })
   }
@@ -572,7 +619,7 @@ function parseFindingsDocument(input) {
       if (typeof d.drop_reason !== 'string' || !VALID_DROP_REASONS.has(d.drop_reason)) {
         throw new Error(`Invalid findings.json: ${label}.drop_reason must be "dedupe" or "quiet".`)
       }
-      const finding = validateFinding(d.finding, index, 'dropped_findings')
+      const finding = validateFinding(d.finding, index, `${label}.finding`)
       const keptId = assertBoundedString(d.kept_id, MAX_STRING_LENGTHS.id, `${label}.kept_id`)
       const auditLabel = assertBoundedString(d.audit_label, MAX_STRING_LENGTHS.audit_label, `${label}.audit_label`)
       const auditTokens = assertOptionalNonNegInt(d.audit_tokens, `${label}.audit_tokens`)
@@ -655,6 +702,8 @@ function parseFindingsDocument(input) {
     ...(typeof refused === 'boolean' ? { refused } : {}),
     ...(typeof topReason === 'string' ? { reason: topReason } : {}),
     ...(typeof errorStr === 'string' ? { error: errorStr } : {}),
+    ...(companies !== undefined ? { companies } : {}),
+    ...(fallbackReason !== undefined ? { fallback_reason: fallbackReason } : {}),
   }
 }
 
