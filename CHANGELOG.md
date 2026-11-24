@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.1
+
+- **Node 24 runtime:** the action now runs on `node24`, so GitHub no longer shows the Node.js 20 deprecation warning.
+
 ## v1.3.0
 
 - **Ready-to-paste Copy fix prompt:** Inline and summary findings now include a collapsed **Copy fix prompt** section. On trusted same-repository PRs (`OWNER`, `MEMBER`, `COLLABORATOR`) and verified linear `push` comparisons, the prompt is pre-filled with the verified file path (JSON-quoted), line range, problem, failure scenario, and `expected_behavior` when provided. On fork PRs, external authors, or unverified paths, it falls back to a safe placeholder template.

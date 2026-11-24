@@ -84,5 +84,5 @@ outputs:
   normal-count:
     description: 'Number of summary-only findings placed in the collapsed <details> block.'
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
