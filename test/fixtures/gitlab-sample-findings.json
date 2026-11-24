@@ -1,0 +1,96 @@
+{
+  "schema": "megalens.findings/v1",
+  "review_id": "rv_gitlab_sample_0001",
+  "tier": "standard",
+  "status": "complete",
+  "target": {
+    "kind": "range",
+    "base": "1111111111111111111111111111111111111111",
+    "head": "2222222222222222222222222222222222222222",
+    "snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "passes": [
+    {
+      "name": "codex-standard",
+      "model": "gpt-6.2-sol",
+      "effort": "medium",
+      "status": "ok",
+      "minutes": 1.4,
+      "route": "openai"
+    }
+  ],
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/auth.ts",
+      "line_start": 12,
+      "line_end": 14,
+      "title": "Token comparison uses non-constant-time equality",
+      "claim": "Comparing session signatures with === leaks timing information to callers.",
+      "failure_scenario": "An attacker measures response latency across forged cookies to recover valid MAC bytes.",
+      "priority": "P0",
+      "strength": "strong",
+      "found_by": ["codex-standard"]
+    },
+    {
+      "id": "f2",
+      "file": "src/auth.ts",
+      "line_start": 10,
+      "line_end": 10,
+      "title": "Unchecked null header before split",
+      "claim": "Existing context line calls header.split(' ') when header can be undefined.",
+      "failure_scenario": "Missing Authorization header throws TypeError and crashes the request handler.",
+      "priority": "P1",
+      "strength": "strong",
+      "found_by": ["codex-standard"]
+    },
+    {
+      "id": "f3",
+      "file": "src/auth.ts",
+      "line_start": 15,
+      "title": "Error message leaks internal state",
+      "claim": "Returning raw parser details helps callers probe internal routes (see !42).",
+      "failure_scenario": "Client receives stack hint in 401 body.",
+      "priority": "P2",
+      "strength": "strong",
+      "found_by": ["codex-standard"]
+    },
+    {
+      "id": "f4",
+      "file": "src/auth.ts",
+      "line_start": 16,
+      "title": "Redundant string trim",
+      "claim": "The token is already trimmed upstream.",
+      "failure_scenario": "Minor readability noise.",
+      "priority": "P3",
+      "strength": "normal",
+      "found_by": ["codex-standard"]
+    },
+    {
+      "id": "f5",
+      "file": "src/auth.ts",
+      "line_start": 99,
+      "title": "Out-of-diff strong finding falls back to summary",
+      "claim": "Line 99 is outside the MR diff hunk so it must appear in the collapsed summary block instead of failing inline posting.",
+      "failure_scenario": "Unbounded map growth over long uptime.",
+      "priority": "P1",
+      "strength": "strong",
+      "found_by": ["codex-standard"]
+    }
+  ],
+  "dropped_by_quiet_mode": 0,
+  "dropped_findings": [],
+  "usage": {
+    "requests": 4,
+    "input_tokens": 12400,
+    "cached_input_tokens": 6000,
+    "output_tokens": 920
+  },
+  "notes": [],
+  "sandbox": {
+    "excluded_files": 0,
+    "skipped_files": 0
+  },
+  "isolation": "bwrap",
+  "route": "openai"
+}

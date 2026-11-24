@@ -3,10 +3,31 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
+import { debuglog } from 'node:util'
+import { normalizeTrustedApiUrl } from './megalens-api.js'
 import { redactSecrets } from './redact.js'
 
 const SAFE_VERSION_RE = /^[A-Za-z0-9._-]+$/
 const ALLOWED_CHILD_ENV_KEYS = ['PATH', 'HOME', 'RUNNER_TEMP', 'TMPDIR']
+export const NODE_DEBUG_CHILD_PROCESS_ERROR =
+  'Refusing to launch megalens-review with NODE_DEBUG child_process diagnostics enabled (unset NODE_DEBUG before starting Node so review credentials are never written to stderr).'
+
+/** Node's child process debug logger can write the full child environment directly to stderr. */
+export function isChildProcessDebugEnabled(env = process.env) {
+  if (debuglog('child_process').enabled) return true
+  const raw = typeof env?.NODE_DEBUG === 'string' ? env.NODE_DEBUG : ''
+  if (!raw.trim()) return false
+  return raw
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)
+    .some((pattern) => {
+      if (pattern === '*' || pattern === 'child_process') return true
+      if (!pattern.includes('*')) return false
+      const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+      return new RegExp(`^${escaped}$`).test('child_process')
+    })
+}
 
 export const ENGINE_PACKAGE_NAME = 'megalens-review'
 
@@ -64,7 +85,7 @@ export function resolveAuthEnv({ megalensToken, openaiApiKey, reviewId, reviewKe
  * @param {Record<string, string | undefined>} baseEnv
  * @param {'review-key' | 'gateway' | 'byo-key' | null | undefined} authMode
  * @param {Record<string, string> | null | undefined} authEnv
- * @param {{ byoKeyEnabled?: boolean }} [opts]
+ * @param {{ byoKeyEnabled?: boolean, apiUrl?: string | null }} [opts]
  * @returns {Record<string, string>}
  */
 export function buildChildEnv(baseEnv = {}, authMode = null, authEnv = null, opts = {}) {
@@ -76,6 +97,9 @@ export function buildChildEnv(baseEnv = {}, authMode = null, authEnv = null, opt
     if (typeof val === 'string' && val.length > 0) {
       clean[key] = val
     }
+  }
+  if (typeof opts?.apiUrl === 'string' && opts.apiUrl.trim()) {
+    clean.MEGALENS_API_URL = normalizeTrustedApiUrl(opts.apiUrl)
   }
   if (
     authMode === 'review-key'
@@ -299,12 +323,18 @@ export async function runEngineCli(opts, deps = {}) {
   if (opts.isFork && opts.authMode === 'byo-key') {
     throw new Error('BYO key is not used on fork PRs; use a MegaLens token.')
   }
+  const validatedApiUrl = typeof opts.apiUrl === 'string' && opts.apiUrl.trim()
+    ? normalizeTrustedApiUrl(opts.apiUrl)
+    : null
 
   const execFn = deps.execFileImpl ?? defaultExecFile
   const readFileFn = deps.readFileImpl ?? ((p) => readFile(p, 'utf8'))
   const rmFn = deps.rmImpl ?? rm
   const statFn = deps.statImpl ?? stat
   const baseEnv = deps.baseEnv ?? process.env
+  if (opts.authMode && isChildProcessDebugEnabled(baseEnv)) {
+    throw new Error(NODE_DEBUG_CHILD_PROCESS_ERROR)
+  }
   const runnerTemp = opts.runnerTemp || baseEnv.RUNNER_TEMP || tmpdir()
   const secretValues = [
     opts.authEnv?.MEGALENS_REVIEW_KEY,
@@ -362,7 +392,10 @@ export async function runEngineCli(opts, deps = {}) {
       cliBin: binPath,
     })
 
-    const childEnv = buildChildEnv(baseEnv, opts.authMode, opts.authEnv, { byoKeyEnabled })
+    const childEnv = buildChildEnv(baseEnv, opts.authMode, opts.authEnv, {
+      byoKeyEnabled,
+      apiUrl: validatedApiUrl,
+    })
     const timeoutMs = Math.max(1, Number(opts.timeoutMinutes) || 25) * 60_000 + 30_000
 
     // Fresh output file for every invocation: a leftover document must never be read as this run's result.

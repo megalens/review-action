@@ -37,6 +37,32 @@ export function normalizeApiUrl(rawUrl) {
   return value
 }
 
+const TRUSTED_MEGALENS_HOST_RE = /^([a-z0-9-]+\.)*megalens\.ai$/
+
+/** Validate a gateway origin before handing it to the review engine or using it in GitLab CI. */
+export function normalizeTrustedApiUrl(rawUrl) {
+  const value = String(rawUrl || DEFAULT_MEGALENS_API_URL).trim().replace(/\/+$/, '')
+  let parsed
+  try {
+    parsed = new URL(value)
+  } catch {
+    throw new Error('Invalid MegaLens API URL.')
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('Unsafe MegaLens API URL. Credentials in URLs are not allowed.')
+  }
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new Error('Invalid MegaLens API URL. Use a gateway origin without a path, query, or fragment.')
+  }
+  if (parsed.port) {
+    throw new Error('Invalid MegaLens API URL. Use the standard HTTPS port.')
+  }
+  if (parsed.protocol !== 'https:' || !TRUSTED_MEGALENS_HOST_RE.test(parsed.hostname)) {
+    throw new Error('Untrusted MegaLens API URL. Use https://megalens.ai or one of its HTTPS subdomains.')
+  }
+  return parsed.origin
+}
+
 /**
  * Create a server-owned review via POST /api/v2/reviews.
  * Sends only repo, base_sha, head_sha, and tier (contract section 6).
@@ -47,6 +73,7 @@ export function normalizeApiUrl(rawUrl) {
  *   baseSha: string,
  *   headSha: string,
  *   tier: string,
+ *   userAgent?: string,
  * }} opts
  * @param {{ fetchImpl?: typeof fetch }} [deps]
  * @returns {Promise<{ reviewId: string, reviewKey: string }>}
@@ -61,11 +88,12 @@ export async function createMegaLensReview(opts, deps = {}) {
 
   const res = await fetchImpl(`${baseUrl}/api/v2/reviews`, {
     method: 'POST',
+    redirect: 'error',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      'User-Agent': 'MegaLens-GitHub-Action',
+      'User-Agent': opts.userAgent || 'MegaLens-GitHub-Action',
     },
     body: JSON.stringify({
       repo: opts.repo,
@@ -74,6 +102,10 @@ export async function createMegaLensReview(opts, deps = {}) {
       tier: opts.tier,
     }),
   })
+
+  if (res.status >= 300 && res.status < 400) {
+    throw new MegaLensApiError(res.status, 'MegaLens create review refused unexpected HTTP redirect.')
+  }
 
   if (!res.ok) {
     let bodyJson = null

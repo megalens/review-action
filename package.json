@@ -7,6 +7,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:gitlab": "node scripts/build-gitlab.mjs --update-template",
+    "gitlab:dry-run": "node scripts/gitlab-dry-run.mjs"
   }
 }

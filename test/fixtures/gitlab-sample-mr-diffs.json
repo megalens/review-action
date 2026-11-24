@@ -1,0 +1,10 @@
+[
+  {
+    "old_path": "src/auth.ts",
+    "new_path": "src/auth.ts",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "diff": "@@ -10,5 +10,8 @@ export function verifyToken(header?: string) {\n const parts = header.split(' ')\n+const token = parts[1]?.trim()\n+if (token === expectedToken) {\n+  return true\n+}\n+return { error: `bad header ${header}` }\n+const unused = token?.trim()\n return false\n"
+  }
+]

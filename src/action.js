@@ -41,7 +41,7 @@ import {
 } from './format.js'
 import { createGitHubApi, isForkPullRequest } from './github-api.js'
 export { isForkPullRequest } from './github-api.js'
-import { createMegaLensReview, DEFAULT_MEGALENS_API_URL } from './megalens-api.js'
+import { createMegaLensReview, DEFAULT_MEGALENS_API_URL, normalizeTrustedApiUrl } from './megalens-api.js'
 import { errorText, redactSecrets } from './redact.js'
 
 const VALID_TIERS = new Set(['standard', 'double', 'deep'])
@@ -766,6 +766,8 @@ export async function runAction(deps = {}) {
       try { await prepareSandboxFn() } catch { /* never blocks: the engine pre-check decides */ }
     }
     try {
+      const hasExplicitApiUrl = Boolean(getInput(env, 'api-url', '') || String(env.MEGALENS_API_URL || '').trim())
+      const trustedApiUrl = hasExplicitApiUrl ? normalizeTrustedApiUrl(inputs.apiUrl) : undefined
       cliResult = await runEngine({
         tier: selectedTier,
         baseSha,
@@ -775,6 +777,7 @@ export async function runAction(deps = {}) {
         engineVersion: inputs.engineVersion,
         authMode: auth.mode,
         authEnv: auth.env,
+        ...(trustedApiUrl ? { apiUrl: trustedApiUrl } : {}),
         isFork,
         repoPath: env.GITHUB_WORKSPACE || process.cwd(),
         runnerTemp,

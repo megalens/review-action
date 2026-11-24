@@ -19,14 +19,15 @@ export const SUMMARY_MARKER = summaryMarker('standard')
 export const WALKTHROUGH_MARKER = '<!-- megalens:walkthrough:v1 -->'
 
 /**
- * Hidden metadata line embedded in the summary comment to support burst guard per head+tier.
+ * Hidden metadata for the burst guard and GitLab's strong finding gate.
  * @param {string} headSha
  * @param {string} [tier]
  * @param {string | null} [status]
  * @param {number | null} [ts]
+ * @param {{ strongCount?: number | null }} [opts]
  * @returns {string}
  */
-export function summaryMetaMarker(headSha, tier = 'standard', status = null, ts = null) {
+export function summaryMetaMarker(headSha, tier = 'standard', status = null, ts = null, opts = {}) {
   const safeSha = String(headSha || '').toLowerCase().replace(/[^a-z0-9]/g, '') || 'unknown'
   const safeTier = String(tier || 'standard').toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'standard'
   const safeStatus = typeof status === 'string'
@@ -35,13 +36,16 @@ export function summaryMetaMarker(headSha, tier = 'standard', status = null, ts 
   const parts = [`head=${safeSha}`, `tier=${safeTier}`]
   if (safeStatus) parts.push(`status=${safeStatus}`)
   if (typeof ts === 'number' && Number.isFinite(ts) && ts > 0) parts.push(`ts=${Math.trunc(ts)}`)
+  if (Number.isSafeInteger(opts?.strongCount) && opts.strongCount >= 0) {
+    parts.push(`strong=${opts.strongCount}`)
+  }
   return `<!-- megalens:meta ${parts.join(' ')} -->`
 }
 
 /**
- * Parse tier, head SHA, status, and timestamp metadata from an existing summary comment body.
+ * Parse tier, head SHA, status, timestamp, and strong count from an existing summary comment body.
  * @param {string | null | undefined} body
- * @returns {{ tier: string | null, headSha: string | null, status: string | null, ts: number | null } | null}
+ * @returns {{ tier: string | null, headSha: string | null, status: string | null, ts: number | null, strongCount: number | null } | null}
  */
 export function parseSummaryMeta(body) {
   if (typeof body !== 'string') return null
@@ -59,11 +63,13 @@ export function parseSummaryMeta(body) {
     }
   }
   const tsNum = attrs.ts !== undefined ? Number(attrs.ts) : NaN
+  const strongNum = /^\d+$/.test(attrs.strong) ? Number(attrs.strong) : NaN
   return {
     tier: (attrs.tier ?? markerMatch?.[1] ?? '').toLowerCase() || null,
     headSha: attrs.head ? attrs.head.toLowerCase() : null,
     status: attrs.status ? attrs.status.toLowerCase() : null,
     ts: Number.isFinite(tsNum) && tsNum > 0 ? tsNum : null,
+    strongCount: Number.isSafeInteger(strongNum) ? strongNum : null,
   }
 }
 
@@ -452,7 +458,8 @@ export function formatSummaryComment(input) {
 
   const headerLines = [
     summaryMarker(tier),
-    summaryMetaMarker(headSha, tier, status, nowTs),
+    summaryMetaMarker(headSha, tier, status, nowTs, { strongCount: input.gateStrongCount }),
+    ...(input.metadataMarker ? [input.metadataMarker] : []),
     `### MegaLens static review of \`${shortSha}\``,
     '',
   ]

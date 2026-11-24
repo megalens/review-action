@@ -1,0 +1,609 @@
+spec:
+  inputs:
+    job_name:
+      default: megalens-review
+      description: Base name for the MegaLens merge request review jobs (review, publish, gate, deep, deep-run, deep-publish, fork-skip).
+    stage:
+      default: test
+      description: Pipeline stage in which the MegaLens review and publish jobs run.
+    tier:
+      default: standard
+      options:
+        - standard
+      description: Automatic MR push review tier (always standard; trigger the manual <job_name>-deep job for deep).
+    fail_on:
+      default: none
+      options:
+        - none
+        - strong
+      description: Fail the publish job when strong findings are reported (none or strong).
+    inline:
+      type: boolean
+      default: true
+      description: Post strong P0/P1 findings as inline MR discussions (other findings always go in ONE collapsed summary note).
+    timeout_minutes:
+      type: number
+      default: 25
+      description: Maximum minutes to wait for the pinned megalens-review engine CLI.
+    api_url:
+      default: https://megalens.ai
+      regex: ^https://([a-z0-9-]+\.)*megalens\.ai$
+      description: Trusted MegaLens gateway origin (https://megalens.ai or https://<subdomain>.megalens.ai).
+    gitlab_api_url:
+      regex: '^https://[a-zA-Z0-9.:[\]_/-]+/api/v4$'
+      description: 'Required trusted HTTPS GitLab API base URL, for example https://gitlab.com/api/v4.'
+    engine_version:
+      default: '0.1.8'
+      options: ['0.1.8']
+      description: Pinned megalens-review engine version (verified against its pinned sha512 integrity digest).
+    review_environment:
+      default: megalens-review
+      regex: ^[A-Za-z0-9_./-]+$
+      description: GitLab environment name used by review jobs so MEGALENS_TOKEN can be scoped exclusively to review jobs (never publish).
+    publish_environment:
+      default: megalens-publish
+      regex: ^[A-Za-z0-9_./-]+$
+      description: GitLab environment name used by publish jobs (receives MEGALENS_GITLAB_TOKEN only; MEGALENS_TOKEN is refused).
+    image:
+      regex: ^.+@sha256:[0-9a-f]{64}$
+      description: >
+        Required: pre-baked Node 24 container image containing git, ca-certificates, and bubblewrap (bwrap),
+        pinned by immutable @sha256 digest (build from docker/gitlab-runner.Dockerfile; requires a container executor, not shell).
+    publish_image:
+      # Pinned by immutable manifest digest (node:24-bookworm-slim).
+      default: node:24-bookworm-slim@sha256:32e57b5784e8875d2cc0112dcaf13f9100f2d0d9446187808738e99aee29a5a2
+      regex: ^.+@sha256:[0-9a-f]{64}$
+      description: Node 24 container image pinned by @sha256 digest for publish and fork-skip jobs.
+    runner_url:
+      regex: ^https://[^\s'"\\]+$
+      description: >
+        Required: immutable HTTPS URL of dist/gitlab.mjs pinned to a release commit SHA
+        (e.g. https://raw.githubusercontent.com/megalens/review-action/<RELEASE_SHA>/dist/gitlab.mjs;
+        must match runner_sha256).
+    runner_sha256:
+      default: '736886c6272cad1a7a42976d76eb0d7dc18d78f2f6581dc029dc0e29c2286658'
+      regex: ^[0-9a-f]{64}$
+      description: Expected sha256 hex digest of dist/gitlab.mjs (refused if verification fails).
+    allow_failure:
+      type: boolean
+      default: false
+      description: Allow the MR pipeline to pass even if the automatic review or publish job exits non-zero.
+---
+.megalens-review-base:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  interruptible: true
+  inherit:
+    variables: false
+  before_script: []
+  after_script: []
+  # Override the project-wide YAML default hook and validate with shell builtins before clone/fetch.
+  # GitLab Runner runs writeExports, SourceEnv, writeGitSSLConfig, and any runner-configured
+  # pre_get_sources_script before this hook. The operator controls config.toml, including the
+  # environment and helper image, so these jobs require a trusted runner configuration.
+  # At pipeline creation, non-manual credential-bearing jobs exclude manual/retry variables,
+  # inherit: variables: false drops global YAML variables,
+  # dependencies: [] drops dotenv inheritance, rules: omits any job seeing CI/CD
+  # PATH/BASH_ENV/ENV/LD_PRELOAD (failing pipeline creation via <job_name>-gate), and
+  # docker/gitlab-runner.Dockerfile locks PATH readonly in the build container.
+  hooks:
+    pre_get_sources_script:
+      - |
+        set +x
+        if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ] || [ -n "${LD_PRELOAD:-}" ]; then
+          echo "MegaLens error: refusing untrusted shell hook or preload variable (BASH_ENV/ENV/LD_PRELOAD) before fetching sources." >&2
+          exit 1
+        fi
+        case ":${PATH:-}:" in
+          "::"|*"::"*)
+            echo "MegaLens error: refusing empty or relative PATH entry before fetching sources." >&2
+            exit 1
+            ;;
+        esac
+        _ml_rest="${PATH}:"
+        while [ -n "${_ml_rest}" ]; do
+          _ml_dir="${_ml_rest%%:*}"
+          _ml_rest="${_ml_rest#*:}"
+          case "${_ml_dir}" in
+            /usr/local/sbin|/usr/local/bin|/usr/sbin|/usr/bin|/sbin|/bin) ;;
+            *)
+              echo "MegaLens error: refusing untrusted PATH directory before fetching sources." >&2
+              exit 1
+              ;;
+          esac
+        done
+        unset _ml_rest _ml_dir
+  # Block inheriting artifacts and dotenv variables from earlier stages so upstream jobs cannot
+  # inject or override runner settings, API URLs, or execution flags.
+  dependencies: []
+  # Scope review jobs to a dedicated environment (action: access creates no deployment record)
+  # so MEGALENS_TOKEN can be restricted to this environment and never reaches publish jobs.
+  environment:
+    name: $[[ inputs.review_environment ]]
+    action: access
+  variables:
+    GIT_DEPTH: '0'
+    MEGALENS_MODE: review
+    MEGALENS_RESULT_PATH: .megalens-ci/review-result.json
+  artifacts:
+    # Upload only when the review job succeeds so a build container that fails closed on
+    # readonly PATH never launches upload_artifacts_on_failure in the separate helper container.
+    when: on_success
+    access: none
+    expire_in: 1 day
+    paths:
+      - .megalens-ci/review-result.json
+  script:
+    - &megalens_review_script |
+      set +x
+      set -eu
+      (set -o pipefail 2>/dev/null) && set -o pipefail || true
+      if [ "${PATH:-}" != "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ]; then
+        export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      fi
+      hash -r 2>/dev/null || true
+      unset NODE_OPTIONS NODE_DEBUG NODE_DEBUG_NATIVE
+
+      # Re-export compile-time pinned settings so neither project nor upstream variables can redirect execution.
+      export MEGALENS_MODE="review"
+      export MEGALENS_RESULT_PATH=".megalens-ci/review-result.json"
+      export MEGALENS_FAIL_ON='$[[ inputs.fail_on ]]'
+      export MEGALENS_INLINE='$[[ inputs.inline ]]'
+      export MEGALENS_TIMEOUT_MINUTES='$[[ inputs.timeout_minutes ]]'
+      export MEGALENS_API_URL='$[[ inputs.api_url ]]'
+      export MEGALENS_GITLAB_API_URL='$[[ inputs.gitlab_api_url ]]'
+      export MEGALENS_ENGINE_VERSION='$[[ inputs.engine_version ]]'
+
+      # Belt-and-suspenders fork guard: require CI_PROJECT_ID, CI_MERGE_REQUEST_SOURCE_PROJECT_ID,
+      # and CI_MERGE_REQUEST_PROJECT_ID (target project ID) to all be present and equal.
+      if [ -z "${CI_PROJECT_ID:-}" ] || [ -z "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID:-}" ] || [ -z "${CI_MERGE_REQUEST_PROJECT_ID:-}" ] || [ "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID}" != "${CI_PROJECT_ID}" ] || [ "${CI_MERGE_REQUEST_PROJECT_ID}" != "${CI_PROJECT_ID}" ]; then
+        echo "skipped: fork MR; MegaLens never runs with repository secrets on fork merge requests"
+        exit 0
+      fi
+
+      # Skip routine unprotected MRs cleanly (0 credits, exit 0) ONLY when GitLab explicitly reports
+      # CI_COMMIT_REF_PROTECTED=false and withholds BOTH Protected tokens.
+      # Eligible protected MRs (CI_COMMIT_REF_PROTECTED=true) with missing/misnamed credentials MUST fail
+      # so fail_on: strong can never pass without a review.
+      if [ "${CI_COMMIT_REF_PROTECTED:-}" = "false" ] && [ -z "${MEGALENS_TOKEN:-}" ] && [ -z "${MEGALENS_GITLAB_TOKEN:-}" ]; then
+        node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = fs.realpathSync(process.cwd());
+          const dir = path.join(root, ".megalens-ci");
+          let st = null;
+          try { st = fs.lstatSync(dir); } catch (e) { if (e.code !== "ENOENT") throw e; }
+          if (!st) {
+            fs.mkdirSync(dir, { mode: 0o700 });
+          } else if (st.isSymbolicLink() || !st.isDirectory()) {
+            throw new Error("Refusing to write skip artifact through symlink or non-directory .megalens-ci");
+          }
+          if (fs.realpathSync(dir) !== dir) {
+            throw new Error("Refusing to write skip artifact through symlinked .megalens-ci path");
+          }
+          const target = path.join(dir, "review-result.json");
+          let tst = null;
+          try { tst = fs.lstatSync(target); } catch (e) { if (e.code !== "ENOENT") throw e; }
+          if (tst) {
+            if (tst.isSymbolicLink() || !tst.isFile()) {
+              throw new Error("Refusing to overwrite symlink or non-regular file at .megalens-ci/review-result.json");
+            }
+            fs.unlinkSync(target);
+          }
+          const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0);
+          const fd = fs.openSync(target, flags, 0o600);
+          try {
+            fs.writeFileSync(fd, JSON.stringify({ schema: "megalens.gitlab-result/v1", kind: "skip", reason: "unprotected_mr" }) + "\n", "utf8");
+          } finally {
+            fs.closeSync(fd);
+          }
+        '
+        echo "skipped: protected MegaLens credentials are not available on this unprotected MR branch (see docs/gitlab.md)"
+        exit 0
+      fi
+
+      if [ -z "${MEGALENS_TOKEN:-}" ] || [ -z "${MEGALENS_GITLAB_TOKEN:-}" ]; then
+        echo "MegaLens error: missing MEGALENS_TOKEN or MEGALENS_GITLAB_TOKEN on an eligible MR pipeline. Configure both as Masked + Protected (MEGALENS_TOKEN scoped to \"$[[ inputs.review_environment ]]\") and check Settings -> CI/CD -> Variables -> Access protected resources in merge request pipelines (see docs/gitlab.md)." >&2
+        exit 1
+      fi
+
+      # Require immutable PATH hardening from docker/gitlab-runner.Dockerfile so GitLab Runner's pre-script
+      # variable exports and SourceEnv (mkdir/touch) cannot be hijacked by an MR-supplied executable.
+      if [ ! -f /usr/local/lib/megalens-bash-env.sh ] || [ ! -x /usr/local/bin/bash ] || (PATH="${PATH}") 2>/dev/null; then
+        echo "MegaLens error: pinned image must be built from docker/gitlab-runner.Dockerfile with immutable PATH hardening (/usr/local/bin/bash and /usr/local/lib/megalens-bash-env.sh)." >&2
+        exit 1
+      fi
+
+      # Require pre-baked git and bubblewrap (bwrap) inside the digest-pinned image; never install packages at job runtime.
+      if ! command -v git >/dev/null 2>&1 || ! command -v bwrap >/dev/null 2>&1; then
+        echo "MegaLens error: pinned image must pre-install git, ca-certificates, and bubblewrap (bwrap). Build from docker/gitlab-runner.Dockerfile and pin its @sha256 digest." >&2
+        exit 1
+      fi
+
+      MEGALENS_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/megalens-gitlab-XXXXXX")"
+      export MEGALENS_TMPDIR
+      cleanup() { rm -rf "${MEGALENS_TMPDIR}"; }
+      trap cleanup EXIT
+
+      MEGALENS_RUNNER_FILE="${MEGALENS_TMPDIR}/gitlab.mjs"
+      export MEGALENS_RUNNER_FILE
+
+      # Download runner from compile-time pinned runner_url and verify against compile-time pinned runner_sha256.
+      # Never reads runner URL, local runner path, or expected sha256 from environment variables.
+      node -e '
+        const fs = require("node:fs");
+        const crypto = require("node:crypto");
+        (async () => {
+          const outFile = process.argv[1];
+          const expected = String(process.argv[2] || "").trim().toLowerCase();
+          const url = String(process.argv[3] || "").trim();
+          if (!/^[0-9a-f]{64}$/.test(expected)) {
+            throw new Error("runner_sha256 must be a 64-character hex sha256 digest.");
+          }
+          if (!/^https:\/\//.test(url)) {
+            throw new Error("runner_url must use HTTPS.");
+          }
+          const res = await fetch(url, { headers: { "User-Agent": "MegaLens-GitLab-CI" } });
+          if (!res.ok) {
+            throw new Error("Failed to download MegaLens GitLab runner: HTTP " + res.status);
+          }
+          const bytes = Buffer.from(await res.arrayBuffer());
+          const actual = crypto.createHash("sha256").update(bytes).digest("hex");
+          if (!crypto.timingSafeEqual(Buffer.from(actual, "utf8"), Buffer.from(expected, "utf8"))) {
+            throw new Error("MegaLens GitLab runner sha256 mismatch (expected " + expected + ", got " + actual + ").");
+          }
+          fs.writeFileSync(outFile, bytes, { mode: 0o644 });
+        })().catch((err) => {
+          process.stderr.write((err && err.message ? err.message : String(err)) + "\n");
+          process.exit(1);
+        });
+      ' "${MEGALENS_RUNNER_FILE}" '$[[ inputs.runner_sha256 ]]' '$[[ inputs.runner_url ]]'
+
+      # megalens-review requires an unprivileged user for its bubblewrap sandbox.
+      # Pre-baked images built from docker/gitlab-runner.Dockerfile already run as "node".
+      # If a custom image starts as root, drop to "node" with a fresh temporary HOME directory
+      # while verifying .megalens-ci is never a symlink before creating or chowning it.
+      if [ "$(id -u)" -eq 0 ] && id -u node >/dev/null 2>&1; then
+        NODE_UID="$(id -u node)"
+        NODE_GID="$(id -g node)"
+        node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = fs.realpathSync(process.cwd());
+          const dir = path.join(root, ".megalens-ci");
+          let st = null;
+          try { st = fs.lstatSync(dir); } catch (e) { if (e.code !== "ENOENT") throw e; }
+          if (!st) {
+            fs.mkdirSync(dir, { mode: 0o700 });
+          } else if (st.isSymbolicLink() || !st.isDirectory()) {
+            throw new Error("Refusing symlink or non-directory at .megalens-ci");
+          }
+          if (fs.realpathSync(dir) !== dir) {
+            throw new Error("Refusing symlinked .megalens-ci path");
+          }
+        '
+        mkdir -p "${MEGALENS_TMPDIR}/home"
+        chown -R "${NODE_UID}:${NODE_GID}" "${MEGALENS_TMPDIR}"
+        chown "${NODE_UID}:${NODE_GID}" .megalens-ci
+        export HOME="${MEGALENS_TMPDIR}/home"
+        if command -v setpriv >/dev/null 2>&1; then
+          setpriv --reuid="${NODE_UID}" --regid="${NODE_GID}" --clear-groups \
+            sh -c 'git config --global --add safe.directory "$CI_PROJECT_DIR" >/dev/null 2>&1 || true; exec node "$MEGALENS_RUNNER_FILE"'
+        else
+          su -m -s /bin/sh node -c 'git config --global --add safe.directory "$CI_PROJECT_DIR" >/dev/null 2>&1 || true; exec node "$MEGALENS_RUNNER_FILE"'
+        fi
+      else
+        git config --global --add safe.directory "${CI_PROJECT_DIR:-$(pwd)}" >/dev/null 2>&1 || true
+        node "${MEGALENS_RUNNER_FILE}"
+      fi
+
+.megalens-publish-base:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.publish_image ]]
+  interruptible: false
+  inherit:
+    variables: false
+  before_script: []
+  after_script: []
+  hooks:
+    pre_get_sources_script: []
+  # Separate publish environment: MEGALENS_TOKEN is scoped to review_environment and never injected here.
+  environment:
+    name: $[[ inputs.publish_environment ]]
+    action: access
+  variables:
+    GIT_STRATEGY: none
+    MEGALENS_MODE: publish
+    MEGALENS_RESULT_PATH: .megalens-ci/review-result.json
+  script:
+    - &megalens_publish_script |
+      set +x
+      set -eu
+      (set -o pipefail 2>/dev/null) && set -o pipefail || true
+      if [ "${PATH:-}" != "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ]; then
+        export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      fi
+      hash -r 2>/dev/null || true
+      unset NODE_OPTIONS NODE_DEBUG NODE_DEBUG_NATIVE
+
+      export MEGALENS_MODE="publish"
+      export MEGALENS_RESULT_PATH=".megalens-ci/review-result.json"
+      export MEGALENS_FAIL_ON='$[[ inputs.fail_on ]]'
+      export MEGALENS_INLINE='$[[ inputs.inline ]]'
+      export MEGALENS_GITLAB_API_URL='$[[ inputs.gitlab_api_url ]]'
+
+      if [ -z "${CI_PROJECT_ID:-}" ] || [ -z "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID:-}" ] || [ -z "${CI_MERGE_REQUEST_PROJECT_ID:-}" ] || [ "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID}" != "${CI_PROJECT_ID}" ] || [ "${CI_MERGE_REQUEST_PROJECT_ID}" != "${CI_PROJECT_ID}" ]; then
+        echo "skipped: fork MR; MegaLens never runs with repository secrets on fork merge requests"
+        exit 0
+      fi
+
+      # Token isolation: publish jobs need only MEGALENS_GITLAB_TOKEN and must never receive MEGALENS_TOKEN.
+      if [ -n "${MEGALENS_TOKEN:-}" ]; then
+        echo "MegaLens error: refusing to run publish job with MEGALENS_TOKEN present. Restrict MEGALENS_TOKEN to the \"$[[ inputs.review_environment ]]\" environment scope in GitLab CI/CD Variables." >&2
+        exit 1
+      fi
+
+      MEGALENS_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/megalens-gitlab-pub-XXXXXX")"
+      export MEGALENS_TMPDIR
+      cleanup() { rm -rf "${MEGALENS_TMPDIR}"; }
+      trap cleanup EXIT
+
+      MEGALENS_RUNNER_FILE="${MEGALENS_TMPDIR}/gitlab.mjs"
+      export MEGALENS_RUNNER_FILE
+
+      node -e '
+        const fs = require("node:fs");
+        const crypto = require("node:crypto");
+        (async () => {
+          const outFile = process.argv[1];
+          const expected = String(process.argv[2] || "").trim().toLowerCase();
+          const url = String(process.argv[3] || "").trim();
+          if (!/^[0-9a-f]{64}$/.test(expected)) {
+            throw new Error("runner_sha256 must be a 64-character hex sha256 digest.");
+          }
+          if (!/^https:\/\//.test(url)) {
+            throw new Error("runner_url must use HTTPS.");
+          }
+          const res = await fetch(url, { headers: { "User-Agent": "MegaLens-GitLab-CI" } });
+          if (!res.ok) {
+            throw new Error("Failed to download MegaLens GitLab runner: HTTP " + res.status);
+          }
+          const bytes = Buffer.from(await res.arrayBuffer());
+          const actual = crypto.createHash("sha256").update(bytes).digest("hex");
+          if (!crypto.timingSafeEqual(Buffer.from(actual, "utf8"), Buffer.from(expected, "utf8"))) {
+            throw new Error("MegaLens GitLab runner sha256 mismatch (expected " + expected + ", got " + actual + ").");
+          }
+          fs.writeFileSync(outFile, bytes, { mode: 0o644 });
+        })().catch((err) => {
+          process.stderr.write((err && err.message ? err.message : String(err)) + "\n");
+          process.exit(1);
+        });
+      ' "${MEGALENS_RUNNER_FILE}" '$[[ inputs.runner_sha256 ]]' '$[[ inputs.runner_url ]]'
+
+      node "${MEGALENS_RUNNER_FILE}"
+
+$[[ inputs.job_name ]]:
+  extends: .megalens-review-base
+  resource_group: megalens-$CI_MERGE_REQUEST_IID-$[[ inputs.tier ]]
+  allow_failure: $[[ inputs.allow_failure ]]
+  variables:
+    MEGALENS_TIER: $[[ inputs.tier ]]
+  script:
+    - export MEGALENS_TIER='$[[ inputs.tier ]]' MEGALENS_JOB_MANUAL=false
+    - *megalens_review_script
+  rules:
+    # Block CI/CD-configured PATH/BASH_ENV/ENV/LD_PRELOAD before ANY helper or build container starts with tokens.
+    - if: '$PATH != null && $PATH != ""'
+      when: never
+    - if: '$BASH_ENV != null && $BASH_ENV != ""'
+      when: never
+    - if: '$ENV != null && $ENV != ""'
+      when: never
+    - if: '$LD_PRELOAD != null && $LD_PRELOAD != ""'
+      when: never
+    # Run ONLY on same-project merge request pipelines where pipeline, source, and target project IDs are present and equal.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID'
+      when: on_success
+    - when: never
+
+$[[ inputs.job_name ]]-publish:
+  extends: .megalens-publish-base
+  resource_group: megalens-$CI_MERGE_REQUEST_IID-$[[ inputs.tier ]]
+  allow_failure: $[[ inputs.allow_failure ]]
+  needs:
+    - job: $[[ inputs.job_name ]]
+      artifacts: true
+  variables:
+    MEGALENS_TIER: $[[ inputs.tier ]]
+  script:
+    - export MEGALENS_TIER='$[[ inputs.tier ]]'
+    - *megalens_publish_script
+  rules:
+    - if: '$PATH != null && $PATH != ""'
+      when: never
+    - if: '$BASH_ENV != null && $BASH_ENV != ""'
+      when: never
+    - if: '$ENV != null && $ENV != ""'
+      when: never
+    - if: '$LD_PRELOAD != null && $LD_PRELOAD != ""'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID'
+      when: on_success
+    - when: never
+
+$[[ inputs.job_name ]]-gate:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.publish_image ]]
+  interruptible: true
+  inherit:
+    variables: false
+  before_script: []
+  after_script: []
+  hooks:
+    pre_get_sources_script: []
+  allow_failure: $[[ inputs.allow_failure ]]
+  # Fail-closed DAG sentinel (no environment: scope, never checks out MR code, never omitted by
+  # PATH/BASH_ENV/ENV/LD_PRELOAD). Because it non-optionally needs <job_name>-publish (which needs
+  # <job_name>), ANY global OR environment-scoped (megalens-review / megalens-publish / megalens-*)
+  # PATH, BASH_ENV, ENV, or LD_PRELOAD variable that omits review or publish causes GitLab to reject
+  # pipeline creation immediately (0 jobs run, 0 credits spent, 0 tokens exposed, fail_on: strong
+  # can never be silently bypassed). On a clean MR, verifies neither token leaked unscoped.
+  needs:
+    - job: $[[ inputs.job_name ]]-publish
+      artifacts: false
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID'
+      when: on_success
+    - when: never
+  script:
+    - |
+      set +x
+      if [ -n "${MEGALENS_TOKEN:-}" ] || [ -n "${MEGALENS_GITLAB_TOKEN:-}" ]; then
+        echo "MegaLens error: refusing unscoped MEGALENS_TOKEN or MEGALENS_GITLAB_TOKEN. Scope MEGALENS_TOKEN to \"$[[ inputs.review_environment ]]\" and MEGALENS_GITLAB_TOKEN to \"megalens-*\" (see docs/gitlab.md)." >&2
+        exit 1
+      fi
+      echo "MegaLens review and publish gate verified."
+
+$[[ inputs.job_name ]]-deep:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  interruptible: true
+  inherit:
+    variables: false
+  before_script: []
+  after_script: []
+  hooks:
+    pre_get_sources_script: []
+  dependencies: []
+  allow_failure: true
+  # Zero-secret manual trigger (no environment: scope, GIT_STRATEGY: none). Separating the manual
+  # action from the credential-bearing <job_name>-deep-run job ensures NO credential-bearing job is
+  # `when: manual`, so manual/retry job variables (PATH/BASH_ENV/ENV/LD_PRELOAD) can NEVER enter
+  # the helper or build container of a job carrying MEGALENS_TOKEN or MEGALENS_GITLAB_TOKEN.
+  variables:
+    GIT_STRATEGY: none
+  rules:
+    - if: '$PATH != null && $PATH != ""'
+      when: never
+    - if: '$BASH_ENV != null && $BASH_ENV != ""'
+      when: never
+    - if: '$ENV != null && $ENV != ""'
+      when: never
+    - if: '$LD_PRELOAD != null && $LD_PRELOAD != ""'
+      when: never
+    # Deep tier is reserved for explicit manual triggers by authorized project members.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID'
+      when: manual
+    - when: never
+  script:
+    - |
+      set +x
+      if [ -n "${MEGALENS_TOKEN:-}" ] || [ -n "${MEGALENS_GITLAB_TOKEN:-}" ]; then
+        echo "MegaLens error: refusing to run manual deep trigger with MEGALENS_TOKEN or MEGALENS_GITLAB_TOKEN present. Scope MEGALENS_TOKEN to \"$[[ inputs.review_environment ]]\" and MEGALENS_GITLAB_TOKEN to \"megalens-*\" (see docs/gitlab.md)." >&2
+        exit 1
+      fi
+      if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ] || [ -n "${LD_PRELOAD:-}" ]; then
+        echo "MegaLens error: refusing untrusted shell hook or preload variable (BASH_ENV/ENV/LD_PRELOAD) on manual deep trigger." >&2
+        exit 1
+      fi
+      case ":${PATH:-}:" in
+        "::"|*"::"*)
+          echo "MegaLens error: refusing empty or relative PATH entry on manual deep trigger." >&2
+          exit 1
+          ;;
+      esac
+      _ml_rest="${PATH}:"
+      while [ -n "${_ml_rest}" ]; do
+        _ml_dir="${_ml_rest%%:*}"
+        _ml_rest="${_ml_rest#*:}"
+        case "${_ml_dir}" in
+          /usr/local/sbin|/usr/local/bin|/usr/sbin|/usr/bin|/sbin|/bin) ;;
+          *)
+            echo "MegaLens error: refusing untrusted PATH directory on manual deep trigger." >&2
+            exit 1
+            ;;
+        esac
+      done
+      unset _ml_rest _ml_dir
+      echo "MegaLens deep review triggered; starting $[[ inputs.job_name ]]-deep-run."
+
+$[[ inputs.job_name ]]-deep-run:
+  extends: .megalens-review-base
+  resource_group: megalens-$CI_MERGE_REQUEST_IID-deep
+  allow_failure: true
+  needs:
+    - job: $[[ inputs.job_name ]]-deep
+      artifacts: false
+  variables:
+    MEGALENS_TIER: deep
+  script:
+    - export MEGALENS_TIER=deep MEGALENS_JOB_MANUAL=true
+    - *megalens_review_script
+  rules:
+    - if: '$PATH != null && $PATH != ""'
+      when: never
+    - if: '$BASH_ENV != null && $BASH_ENV != ""'
+      when: never
+    - if: '$ENV != null && $ENV != ""'
+      when: never
+    - if: '$LD_PRELOAD != null && $LD_PRELOAD != ""'
+      when: never
+    # Runs automatically ONLY after an authorized member plays <job_name>-deep; non-manual so
+    # GitLab never allows manual or retry job variables to be injected into this credentialed job.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID'
+      when: on_success
+    - when: never
+
+$[[ inputs.job_name ]]-deep-publish:
+  extends: .megalens-publish-base
+  resource_group: megalens-$CI_MERGE_REQUEST_IID-deep
+  allow_failure: true
+  needs:
+    - job: $[[ inputs.job_name ]]-deep-run
+      artifacts: true
+  variables:
+    MEGALENS_TIER: deep
+  script:
+    - export MEGALENS_TIER=deep
+    - *megalens_publish_script
+  rules:
+    - if: '$PATH != null && $PATH != ""'
+      when: never
+    - if: '$BASH_ENV != null && $BASH_ENV != ""'
+      when: never
+    - if: '$ENV != null && $ENV != ""'
+      when: never
+    - if: '$LD_PRELOAD != null && $LD_PRELOAD != ""'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID'
+      when: on_success
+    - when: never
+
+$[[ inputs.job_name ]]-fork-skip:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.publish_image ]]
+  interruptible: true
+  inherit:
+    variables: false
+  before_script: []
+  after_script: []
+  hooks:
+    pre_get_sources_script: []
+  dependencies: []
+  variables:
+    # Never check out fork code. Note: YAML variables cannot override GitLab project CI/CD variables;
+    # both MEGALENS_TOKEN and MEGALENS_GITLAB_TOKEN MUST be marked Protected + Masked in GitLab project settings.
+    GIT_STRATEGY: none
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_PROJECT_ID == null || $CI_PROJECT_ID == "" || $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == null || $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == "" || $CI_MERGE_REQUEST_PROJECT_ID == null || $CI_MERGE_REQUEST_PROJECT_ID == "" || $CI_MERGE_REQUEST_SOURCE_PROJECT_ID != $CI_PROJECT_ID || $CI_MERGE_REQUEST_PROJECT_ID != $CI_PROJECT_ID)'
+      when: on_success
+    - when: never
+  script:
+    - |
+      set +x
+      if [ "${PATH:-}" != "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ]; then
+        export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      fi
+      echo "skipped: fork MR; MegaLens never runs with repository secrets on fork merge requests"
