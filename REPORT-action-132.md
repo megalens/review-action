@@ -32,3 +32,17 @@ Successful finding publication now logs one prompt decision at `src/gitlab-runne
 The regression at `test/gitlab.test.js:1415` uses the captured API fields and original diff, with a constructed finding because the live artifact was unavailable. It covers inline and summary-only publication, missing details, an unmatched path, denied membership and changed refs. The rebuilt bundle was also replayed through its CLI entry point with all three original response bodies.
 
 `npm test` passed 255 tests. The GitLab dry run rendered seven prompts with the required closing line. Bundle syntax and `git diff --check` passed. The bundle SHA-256 matches the template pin at `templates/megalens-review.yml:64` and is `a6cce7a890a439188ddc0a01ccda02fb9548acf9b2c381ad2388e220ff13faeb`.
+
+## Fix round
+
+### Confirm Review 1
+
+Read the review history in timestamp order. The latest review reported one open high severity finding. A trusted GitLab merge request author received a fill-in prompt on an inline finding (`LOOP-CONFIRM1.md:7`).
+
+The three captured API responses already pass the live merge request and membership checks at `src/gitlab-api.js:185`, `src/gitlab-api.js:219`, and `src/gitlab-runner.js:1460`. A strong finding with an empty `failure_scenario` reproduced the fill-in prompt through the real publish flow before this change. The integrity-verified `megalens-review` 0.1.8 tarball sets an empty scenario and strong classification independently in `package/src/findings.mjs:119`. The action also accepts an empty scenario at `src/findings.js:169`.
+
+GitLab now populates the prompt for a verified author when the live diff verifies the finding's file and line, and the finding has a claim that adds detail beyond its title. If the structured scenario is empty, the prompt asks the coding tool to verify a concrete failure in the code before editing (`src/format.js:294`). Findings with insufficient details still use the fill-in template. The membership transaction and its fail-closed handling remain at `src/gitlab-runner.js:1488`. The captured response replay verifies the supplied API shapes. The historical live cause remains unconfirmed because the original finding artifact and posting credential's membership result were unavailable.
+
+The regression at `test/gitlab.test.js:1415` covers successful inline and summary publication with an empty scenario, plus fill-in prompts for title-only findings, findings outside the live diff, Reporter access, denied membership, and changed diff refs. The bundled CLI also passed a replay with all three original GitLab response bodies and a constructed strong finding with an empty scenario. No live GitLab writes were made.
+
+`npm test` passed 259 tests with zero skips. The GitLab dry run produced seven prompts with the required closing line. Bundle syntax and `git diff --check` passed. The regenerated bundle SHA-256 is `baa644e7dab52f14debab97d934f571251ba200686c674af380e68bfb155e24c` and matches the template pin at `templates/megalens-review.yml:64`. No database was needed and no commit was made.

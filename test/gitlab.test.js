@@ -1424,7 +1424,11 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
     for (const scenario of [
       { name: 'Owner with a complete finding', log: 'ready-to-paste', populated: true },
       { name: 'Owner with inline discussions disabled', log: 'ready-to-paste', populated: true, summaryOnly: true },
-      { name: 'Owner without a failure scenario', log: 'fill-in (finding did not meet fix prompt requirements)', omitScenario: true },
+      { name: 'Owner with a strong engine finding and an empty scenario', log: 'ready-to-paste', populated: true, emptyScenario: true },
+      { name: 'Owner with a strong engine finding and inline disabled', log: 'ready-to-paste', populated: true, emptyScenario: true, summaryOnly: true },
+      { name: 'Owner with only a title', log: 'fill-in (finding did not meet fix prompt requirements)', emptyScenario: true, titleOnly: true },
+      { name: 'Owner with a claim outside the live diff', log: 'fill-in (finding did not meet fix prompt requirements)', emptyScenario: true, outOfDiff: true },
+      { name: 'Reporter with a strong engine finding and an empty scenario', log: 'fill-in (author access level below Developer)', emptyScenario: true, memberLevel: 20 },
       { name: 'Owner without a verified finding path', log: 'fill-in (no finding matched a verified diff path)', unmatchedPath: true },
       { name: 'posting credential denied member access', log: 'fill-in (membership request failed with HTTP 403)', memberStatus: 403 },
       { name: 'diff refs change after membership lookup', log: 'fill-in (merge request diff refs changed)', moveBase: true },
@@ -1446,14 +1450,18 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
           MEGALENS_TOKEN: '',
         })
         const file = scenario.unmatchedPath ? 'src/unmatched.js' : diffs[0].new_path
+        const findingInDiff = !scenario.unmatchedPath && !scenario.outOfDiff
+        const title = 'Positive discounts increase the price'
         const finding = {
-          id: 'discount', file, line_start: 4, title: 'Positive discounts increase the price',
-          claim: 'Adding the percentage raises the total.', priority: 'P1', strength: 'strong',
-          ...(scenario.omitScenario ? {} : { failure_scenario: 'A positive discount increases the amount charged.' }),
+          id: 'discount', file, line_start: scenario.outOfDiff ? 6 : 4, title,
+          claim: scenario.titleOnly ? title : 'Adding the percentage raises the total.',
+          priority: 'P1', strength: 'strong',
+          failure_scenario: scenario.emptyScenario ? '' : 'A positive discount increases the amount charged.',
         }
         await writeResultArtifactSafely(env.MEGALENS_RESULT_PATH, JSON.stringify({
           schema: 'megalens.gitlab-result/v1', kind: 'review', tier: 'standard',
           ...mr.diff_refs, exit_code: 0,
+          strong_finding_indexes: findingInDiff ? [0] : [],
           doc: JSON.parse(makeDoc([finding], { target: { kind: 'range', base, head } })),
         }), projectDir)
 
@@ -1478,7 +1486,7 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
                 assert.ok(request.signal instanceof AbortSignal)
                 return scenario.memberStatus
                   ? Response.json({ message: `Denied for user ${member.id}: ${env.MEGALENS_GITLAB_TOKEN}` }, { status: scenario.memberStatus })
-                  : Response.json(member)
+                  : Response.json({ ...member, access_level: scenario.memberLevel ?? member.access_level })
               case '/api/v4/user':
                 return Response.json({ username: 'fixture-bot' })
               case `${mrPath}/discussions`:
@@ -1494,7 +1502,7 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
 
         assert.equal(result.exitCode, 0)
         assert.equal(result.status, 'complete')
-        const expectedInlineCount = scenario.summaryOnly || scenario.unmatchedPath ? 0 : 1
+        const expectedInlineCount = !scenario.summaryOnly && findingInDiff ? 1 : 0
         assert.equal(result.inlinePostedCount, expectedInlineCount)
         assert.equal(posts.length, 1 + expectedInlineCount)
         const memberRequest = `GET ${memberPath}`
@@ -1504,7 +1512,13 @@ describe('GitLab end-to-end orchestration, gates, freshness, deep guard, and pub
         for (const body of posts) {
           if (scenario.populated) {
             assert.ok(body.includes(`Fix this bug in "${file}" (line 4).`))
-            assert.match(body, /Failure scenario: A positive discount increases the amount charged\./)
+            if (scenario.emptyScenario) {
+              assert.match(body, /Problem: Positive discounts increase the price\. Adding the percentage raises the total\./)
+              assert.doesNotMatch(body, /Failure scenario:/)
+              assert.match(body, /Verify a concrete failure scenario in the code before editing\./)
+            } else {
+              assert.match(body, /Failure scenario: A positive discount increases the amount charged\./)
+            }
           } else {
             assert.match(body, /Check \[file and lines\]/)
           }

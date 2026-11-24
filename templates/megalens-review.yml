@@ -61,7 +61,7 @@ spec:
         (e.g. https://raw.githubusercontent.com/megalens/review-action/<RELEASE_SHA>/dist/gitlab.mjs;
         must match runner_sha256).
     runner_sha256:
-      default: 'a6cce7a890a439188ddc0a01ccda02fb9548acf9b2c381ad2388e220ff13faeb'
+      default: 'baa644e7dab52f14debab97d934f571251ba200686c674af380e68bfb155e24c'
       regex: ^[0-9a-f]{64}$
       description: Expected sha256 hex digest of dist/gitlab.mjs (refused if verification fails).
     allow_failure:

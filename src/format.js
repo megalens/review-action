@@ -284,11 +284,19 @@ function formatFixPrompt(finding, extraSecrets, paths, requireDetails) {
     ? Number.isSafeInteger(end) && end > start ? ` (lines ${start}-${end})` : ` (line ${start})`
     : ''
   const clean = (value, max) => sentenceEnd(cleanPromptText(value, max, extraSecrets))
-  const problem = [clean(finding.title, 160), clean(finding.claim, 400)].filter(Boolean).join(' ')
+  const title = clean(finding.title, 160)
+  const claim = clean(finding.claim, 400)
+  const problem = [title, claim].filter(Boolean).join(' ')
   const scenario = clean(finding.failure_scenario, 300)
   const expected = clean(finding.expected_behavior, 300)
   if (!problem && !scenario) return FIX_PROMPT
-  if (requireDetails && (!location || !problem || !scenario)) return FIX_PROMPT
+  if (requireDetails && (!location || !problem)) return FIX_PROMPT
+  if (requireDetails && !scenario) {
+    // The engine can report a bug in a diff hunk without a separate failure scenario.
+    const position = finding._gitlabPosition
+    if (position?.newPath !== file || position.newLine !== start || !claim
+      || claim === clean(finding.title, 400)) return FIX_PROMPT
+  }
 
   return [
     '<details>',
@@ -304,6 +312,7 @@ function formatFixPrompt(finding, extraSecrets, paths, requireDetails) {
     ...(expected ? [`Expected: ${expected}`] : []),
     '---',
     '',
+    ...(requireDetails && !scenario ? ['Verify a concrete failure scenario in the code before editing.'] : []),
     'Change only what is needed, keep existing behavior, add a regression test, and run the relevant tests.',
     FIX_PROMPT_END,
     '```',
